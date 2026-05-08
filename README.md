@@ -1,10 +1,10 @@
-Career + Research RAG Studio
+# Career + Research RAG Studio
 A production-grade RAG (Retrieval-Augmented Generation) system for querying
 your personal career documents — resumes, job descriptions, class notes, and research papers.
 Built by Prakriti Dhital as a portfolio project covering the full RAG lifecycle:
 ingestion → retrieval → evaluation → agentic routing → deployment.
 
-What it does
+# What it does
 
 Upload your resumes, job descriptions, cover letters, class notes, and research papers
 Ask questions like:
@@ -19,7 +19,7 @@ Get grounded, cited answers with source references
 Evaluate retrieval quality automatically using RAGAS
 
 
-Architecture
+# Architecture
 data/uploads/          ← your documents go here
       ↓
 backend/ingestion/     ← PDF loading, chunking, embedding, FAISS index
@@ -36,13 +36,13 @@ frontend/              ← React UI with chat + citation display
       ↓
 evaluation/            ← RAGAS metrics, golden test set, comparison dashboard
 
-6-Week Build Plan
+# 6-Week Build Plan
 WeekFocusStatus1Ingestion pipeline (loader, chunker, embeddings, FAISS)🚧 In progress2Answer generation + citations + basic UI⬜3Hybrid retrieval + reranking⬜4RAGAS evaluation + golden test set⬜5Agentic routing with LangGraph⬜6Deploy to Google Cloud Run + writeup⬜
 
-Tech Stack
+# Tech Stack
 LayerTechnologyDocument parsingPyMuPDFChunkingLangChain splitters + custom recursiveEmbeddingssentence-transformers → OpenAIVector storeFAISS → QdrantSparse retrievalBM25 (rank-bm25)Rerankercross-encoder (sentence-transformers)LLMGoogle Gemini / GPT-4o-miniOrchestrationLangChain + LangGraphEvaluationRAGASBackendFastAPIFrontendReact + TypeScriptObservabilityLangSmithDeploymentDocker + Google Cloud Run
 
-Setup
+# Setup
 bash# 1. Clone and enter project
 git clone <your-repo>
 cd career-rag-studio
