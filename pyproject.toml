@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-studio"
+version = "0.1.0"
+description = "Career research RAG studio with local retrieval and generation."
+requires-python = ">=3.11"
+dependencies = [
+    "faiss-cpu==1.13.2",
+    "numpy==2.4.4",
+    "pypdf==6.10.2",
+    "python-dotenv==1.2.2",
+    "sentence-transformers==5.4.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.2",
+]
+eval = [
+    "datasets",
+    "langchain-ollama",
+    "ragas",
+]
+agent = [
+    "langgraph",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend"]

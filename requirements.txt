@@ -1,0 +1,8 @@
+faiss-cpu==1.13.2
+numpy==2.4.4
+pypdf==6.10.2
+python-dotenv==1.2.2
+sentence-transformers==5.4.1
+
+# Optional: only needed if you set OPENAI_API_KEY and OPENAI_MODEL.
+# openai

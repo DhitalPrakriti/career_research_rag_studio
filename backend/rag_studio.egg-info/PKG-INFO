@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: rag-studio
+Version: 0.1.0
+Summary: Career research RAG studio with local retrieval and generation.
+Requires-Python: >=3.11
+Requires-Dist: faiss-cpu==1.13.2
+Requires-Dist: numpy==2.4.4
+Requires-Dist: pypdf==6.10.2
+Requires-Dist: python-dotenv==1.2.2
+Requires-Dist: sentence-transformers==5.4.1
+Provides-Extra: dev
+Requires-Dist: pytest==8.4.2; extra == "dev"
+Provides-Extra: eval
+Requires-Dist: datasets; extra == "eval"
+Requires-Dist: langchain-ollama; extra == "eval"
+Requires-Dist: ragas; extra == "eval"
