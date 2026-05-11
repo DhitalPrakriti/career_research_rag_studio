@@ -36,8 +36,6 @@ frontend/              ← React UI with chat + citation display
       ↓
 evaluation/            ← RAGAS metrics, golden test set, comparison dashboard
 
-# 6-Week Build Plan
-WeekFocusStatus1Ingestion pipeline (loader, chunker, embeddings, FAISS)🚧 In progress2Answer generation + citations + basic UI⬜3Hybrid retrieval + reranking⬜4RAGAS evaluation + golden test set⬜5Agentic routing with LangGraph⬜6Deploy to Google Cloud Run + writeup⬜
 
 # Tech Stack
 LayerTechnologyDocument parsingPyMuPDFChunkingLangChain splitters + custom recursiveEmbeddingssentence-transformers → OpenAIVector storeFAISS → QdrantSparse retrievalBM25 (rank-bm25)Rerankercross-encoder (sentence-transformers)LLMGoogle Gemini / GPT-4o-miniOrchestrationLangChain + LangGraphEvaluationRAGASBackendFastAPIFrontendReact + TypeScriptObservabilityLangSmithDeploymentDocker + Google Cloud Run
