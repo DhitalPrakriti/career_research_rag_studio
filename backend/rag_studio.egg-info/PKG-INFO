@@ -14,3 +14,5 @@ Provides-Extra: eval
 Requires-Dist: datasets; extra == "eval"
 Requires-Dist: langchain-ollama; extra == "eval"
 Requires-Dist: ragas; extra == "eval"
+Provides-Extra: agent
+Requires-Dist: langgraph; extra == "agent"

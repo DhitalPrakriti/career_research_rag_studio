@@ -86,6 +86,7 @@ def _generate_with_ollama(question: str, contexts: list[RetrievedChunk], model: 
         "model": model,
         "prompt": _build_grounded_prompt(question, contexts),
         "stream": False,
+        "options": _ollama_options(),
     }
     request = urllib.request.Request(
         f"{base_url}/api/generate",
@@ -108,6 +109,24 @@ def _generate_with_ollama(question: str, contexts: list[RetrievedChunk], model: 
     if not answer:
         raise RuntimeError("Ollama returned an empty answer.")
     return answer
+
+
+def _ollama_options() -> dict[str, int]:
+    options: dict[str, int] = {}
+    env_to_option = {
+        "OLLAMA_NUM_GPU": "num_gpu",
+        "OLLAMA_NUM_THREAD": "num_thread",
+        "OLLAMA_NUM_PREDICT": "num_predict",
+    }
+    for env_name, option_name in env_to_option.items():
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            continue
+        try:
+            options[option_name] = int(raw_value)
+        except ValueError as exc:
+            raise RuntimeError(f"{env_name} must be an integer.") from exc
+    return options
 
 
 def _build_grounded_prompt(question: str, contexts: list[RetrievedChunk]) -> str:

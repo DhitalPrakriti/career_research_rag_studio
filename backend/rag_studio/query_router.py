@@ -12,6 +12,7 @@ class RouteDecision:
     multi_query: bool
     hyde: bool
     reason: str
+    rewrite_before_retrieval: bool = False
 
 
 class QueryRouter:
@@ -28,14 +29,28 @@ class QueryRouter:
                 reason="The question does not need document retrieval.",
             )
 
+        if _asks_for_memory_database(lowered):
+            return RouteDecision(
+                route="retrieve",
+                retriever="hybrid",
+                parent_context=False,
+                multi_query=True,
+                hyde=False,
+                reason=(
+                    "The question is a vague memory/database fact question, so rewrite "
+                    "it before retrieval and use smaller chunks for precision."
+                ),
+                rewrite_before_retrieval=True,
+            )
+
         if _asks_for_exact_fact(lowered):
             return RouteDecision(
                 route="retrieve",
                 retriever="hybrid",
-                parent_context=True,
+                parent_context=False,
                 multi_query=False,
                 hyde=False,
-                reason="The question asks for a specific fact, so use precise hybrid retrieval.",
+                reason="The question asks for a specific fact, so use precise child-chunk retrieval.",
             )
 
         if _asks_for_comparison_or_fit(lowered):
@@ -77,6 +92,10 @@ def _is_direct_question(question: str) -> bool:
 def _asks_for_exact_fact(question: str) -> bool:
     exact_markers = {
         "how many",
+        "binary f1",
+        "macro f1",
+        "f1 score",
+        "score did",
         "what score",
         "what database",
         "which database",
@@ -85,6 +104,10 @@ def _asks_for_exact_fact(question: str) -> bool:
         "%",
     }
     return any(marker in question for marker in exact_markers)
+
+
+def _asks_for_memory_database(question: str) -> bool:
+    return "database" in question and "memory" in question
 
 
 def _asks_for_comparison_or_fit(question: str) -> bool:
