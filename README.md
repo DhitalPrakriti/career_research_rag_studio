@@ -135,14 +135,39 @@ python -m venv venv
 # 2. Install the package and extras
 pip install -e ".[dev,eval,agent]"
 
-# 3. Run the tests
+# 3. Configure your keys
+copy .env.example .env           # then fill in GEMINI_API_KEY
+
+# 4. Run the tests
 pytest backend/rag_studio/tests -q
 ```
 
-Generation falls back to extractive answers when no LLM is configured, so the pipeline
-runs end-to-end with zero API keys. To use a local LLM, set `OLLAMA_MODEL` (and
-optionally `OLLAMA_NUM_GPU`, `OLLAMA_NUM_THREAD`, `OLLAMA_NUM_PREDICT`). To use OpenAI,
-set `OPENAI_MODEL` and `OPENAI_API_KEY`.
+### Choosing a generation backend
+
+`AnswerGenerator` picks the first provider that is configured, in this order:
+
+| Order | Provider | Environment |
+| --- | --- | --- |
+| 1 | Gemini (default) | `GEMINI_API_KEY`, optional `GEMINI_MODEL` |
+| 2 | OpenAI-compatible | `OPENAI_API_KEY` + `OPENAI_MODEL`, optional `OPENAI_BASE_URL` |
+| 3 | Ollama (local) | `OLLAMA_MODEL`, optional `OLLAMA_BASE_URL`/`OLLAMA_TIMEOUT`/`OLLAMA_NUM_*` |
+| 4 | Extractive fallback | nothing configured |
+
+`GEMINI_MODEL` defaults to `gemini-3.6-flash`; `gemini-3.5-flash-lite` is a cheaper
+option for bulk work like RAGAS judging.
+
+Two behaviours worth knowing:
+
+- **A configured provider that fails raises instead of falling back.** Silent degradation
+  is how a whole evaluation run can end up scoring extractive text dumps as if they were
+  generated answers — which is exactly what happened to the earlier RAGAS numbers below.
+- **The extractive fallback is not generation.** It is there so the retrieval pipeline runs
+  with zero API keys, but never score those runs for faithfulness or answer relevancy.
+
+Because the OpenAI path honours `OPENAI_BASE_URL`, it doubles as the way to route through
+a LiteLLM proxy — set the base URL to the proxy and `OPENAI_MODEL` to a proxy alias. That
+keeps the proxy's per-model budget caps and response caching, which calling Gemini
+directly does not.
 
 Retrieval and chunking are configured from the environment via `RagConfig.from_env()` —
 `EMBEDDING_MODEL`, `RERANKER_MODEL`, `CHUNK_SIZE`, `CHUNK_OVERLAP`,
@@ -190,39 +215,68 @@ Term recall and document-title hit are saturated at 1.000 on this golden set, so
 longer discriminate between configurations — the mean retrieval grade (range 0.250–0.857)
 is the metric with headroom. Exactly one example (`tutoring_memory`) triggered a rewrite
 and retry. Both facts are the main argument for a harder golden set before tuning further.
+Context precision and recall below are pinned at 1.000 for the same reason: retrieval on
+this set is not the bottleneck, generation quality is.
 
-### RAGAS with a local Ollama judge
+### RAGAS
 
-First generate RAGAS-compatible records from the golden set, then run **one metric at a
-time** — local judging is slow, so start with `--limit 1`:
+Generate records **with a real generation backend configured**, then judge them. With
+`GEMINI_API_KEY` set, both steps use Gemini:
 
 ```powershell
-$env:OLLAMA_MODEL="llama3"
-$env:HF_HUB_OFFLINE="1"
-$env:TRANSFORMERS_OFFLINE="1"
-python -m rag_studio.eval_cli --output evaluation\runs\all_resumes_baseline.jsonl
-python -m rag_studio.ragas_eval_cli --input evaluation\runs\all_resumes_baseline.jsonl `
-  --output evaluation\runs\ragas_ollama_context_recall_limit1.jsonl `
-  --limit 1 --judge-model llama3 --num-thread 4 --metrics context_recall
+python -m rag_studio.eval_cli --output evaluation\runs\gemini_baseline.jsonl
+python -m rag_studio.ragas_eval_cli --input evaluation\runs\gemini_baseline.jsonl `
+  --output evaluation\runs\ragas_gemini.jsonl
 ```
+
+Judging is embarrassingly parallel, so the Gemini judge defaults to 4 concurrent calls and
+the full golden set is practical in one pass. Useful flags:
+
+- `--judge-provider ollama` to judge locally instead (needs `ollama serve`; defaults to 1
+  worker because local judging is the bottleneck)
+- `--judge-model gemini-3.5-flash-lite` to cut judging cost
+- `--metrics faithfulness` to run one metric at a time
+- `--limit N` to judge only the first N examples
 
 Supported metrics: `faithfulness`, `answer_relevancy`, `context_precision`,
 `context_recall`.
 
-**RAGAS results so far are incomplete.** Only `context_recall` has produced a value:
+Results with Gemini generating the answers and `gemini-3.6-flash` judging, over the full
+golden set (n=14, 56 judge calls in about 70 seconds):
 
-| Metric | Value | n |
-| --- | --- | --- |
-| context_recall | 1.00 | 1 |
-| faithfulness | not obtained (null) | 1 |
-| answer_relevancy | not obtained (null) | 1 |
-| context_precision | not obtained (null) | 1 |
+| Metric | Score |
+| --- | --- |
+| faithfulness | 0.979 |
+| answer_relevancy | 0.787 (0.910 excluding negative controls — see below) |
+| context_precision | 1.000 |
+| context_recall | 1.000 |
 
-The three null metrics returned `None` from the local llama3 judge rather than a score,
-and the graded runs were made against *extractive* answers (no LLM was configured at the
-time), which is not a fair target for faithfulness or answer relevancy. Getting real
-numbers here requires re-running with an LLM-backed generator and a judge that reliably
-returns parseable output — that is the open evaluation thread.
+Faithfulness is the metric with real signal: 11 of 14 examples score a perfect 1.00, and
+the floor is 0.83 (`software_frontend`). Being LLM-judged, it moves a little between runs —
+an earlier pass over the same records gave 0.952.
+
+**Answer relevancy penalises correct refusals.** The two lowest scores are `negative_gpa`
+and `negative_salary` at exactly 0.00 — RAGAS classifies "that information is not in the
+sources" as *noncommittal* and floors the score. Those are negative controls, so refusing
+is precisely the behaviour we want, and the metric marks it as failure. Read the 0.910
+positives-only figure alongside the 0.787 headline, and treat per-example answer relevancy
+on negative controls as uninformative.
+
+Three separate bugs had to be fixed before any of these numbers existed, all of which
+produced silent nulls rather than errors:
+
+1. `ragas` 0.4.3 imports `langchain_community.chat_models.vertexai`, removed in
+   langchain-community 0.4, with no upper bound in its own dependencies. Any clean install
+   made `import ragas` fail outright. Pinned to `<0.4`.
+2. The local embeddings wrapper exposed `model` as a `SentenceTransformer` object. RAGAS
+   reads that attribute for telemetry and validates it as `Optional[str]`, so every
+   embedding-based metric — that is, answer relevancy — died inside a pydantic
+   `ValidationError` and returned null. Now a string, with a regression test.
+3. Gemini flash models reject `n > 1`, which RAGAS uses to reverse-generate several
+   questions per answer. Default `--answer-relevancy-strictness` is now 1.
+
+The earlier numbers in this file were also produced against *extractive* answers, since no
+LLM was configured at the time — never a fair target for faithfulness or answer relevancy.
 
 ## Key learning outcomes
 

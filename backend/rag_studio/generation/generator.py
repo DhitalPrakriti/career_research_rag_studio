@@ -5,7 +5,14 @@ import os
 import urllib.error
 import urllib.request
 
+from rag_studio.llm import gemini_is_configured, generate_with_gemini
 from rag_studio.schema import Citation, RetrievedChunk
+
+
+SYSTEM_INSTRUCTION = (
+    "You are a grounded career research assistant. Answer directly from the provided "
+    "sources and cite claims inline with bracketed source numbers like [1]."
+)
 
 
 class AnswerGenerator:
@@ -15,7 +22,18 @@ class AnswerGenerator:
         self.max_context_chars = max_context_chars
 
     def generate(self, question: str, contexts: list[RetrievedChunk]) -> str:
+        """Answer the question, preferring Gemini, then OpenAI, then Ollama.
+
+        Falls back to an extractive answer only when no provider is configured at
+        all. A configured provider that fails raises instead of falling back, so a
+        broken key or quota cannot silently turn an evaluation run into a set of
+        extractive text dumps.
+        """
         contexts = trim_contexts(contexts, self.max_context_chars)
+
+        if gemini_is_configured():
+            return _generate_with_gemini(question, contexts)
+
         api_key = os.getenv("OPENAI_API_KEY")
         openai_model = os.getenv("OPENAI_MODEL")
         if api_key and openai_model:
@@ -52,6 +70,14 @@ def build_citations(contexts: list[RetrievedChunk]) -> list[Citation]:
     return citations
 
 
+def _generate_with_gemini(question: str, contexts: list[RetrievedChunk]) -> str:
+    return generate_with_gemini(
+        _build_grounded_prompt(question, contexts),
+        system_instruction=SYSTEM_INSTRUCTION,
+        temperature=0.0,
+    )
+
+
 def _generate_with_openai(question: str, contexts: list[RetrievedChunk], model: str) -> str:
     try:
         from openai import OpenAI
@@ -64,11 +90,7 @@ def _generate_with_openai(question: str, contexts: list[RetrievedChunk], model: 
         input=[
             {
                 "role": "system",
-                "content": (
-                    "You are a grounded career research assistant. Answer directly from "
-                    "the provided sources and cite claims inline with bracketed source "
-                    "numbers like [1]."
-                ),
+                "content": SYSTEM_INSTRUCTION,
             },
             {
                 "role": "user",

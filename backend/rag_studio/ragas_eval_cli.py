@@ -7,16 +7,28 @@ from typing import Any
 
 import numpy as np
 
+from rag_studio.llm import DEFAULT_GEMINI_MODEL, gemini_api_key, gemini_model_name
+
 
 class SentenceTransformerLangchainEmbeddings:
+    """Minimal LangChain-style embeddings backed by sentence-transformers.
+
+    `model` must stay a plain string. RAGAS reads it with
+    getattr(embeddings, "model", None) for its usage telemetry and validates it as
+    Optional[str], so exposing the SentenceTransformer object here raises a pydantic
+    ValidationError that silently turns every embedding-based metric (that is,
+    answer_relevancy) into a null score. The encoder lives on `_encoder` instead.
+    """
+
     def __init__(self, model_name: str) -> None:
         from sentence_transformers import SentenceTransformer
 
         self.model_name = model_name
-        self.model = SentenceTransformer(model_name)
+        self.model = model_name
+        self._encoder = SentenceTransformer(model_name)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        vectors = self.model.encode(
+        vectors = self._encoder.encode(
             texts,
             convert_to_numpy=True,
             normalize_embeddings=True,
@@ -29,7 +41,14 @@ class SentenceTransformerLangchainEmbeddings:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run RAGAS metrics with local Ollama.")
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        pass
+    else:
+        load_dotenv()
+
+    parser = argparse.ArgumentParser(description="Run RAGAS metrics with a Gemini or Ollama judge.")
     parser.add_argument(
         "--input",
         default="evaluation/runs/all_resumes_baseline.jsonl",
@@ -37,10 +56,24 @@ def main() -> None:
     )
     parser.add_argument(
         "--output",
-        default="evaluation/runs/ragas_ollama_scores.jsonl",
+        default="evaluation/runs/ragas_scores.jsonl",
         help="Where to write row-level RAGAS scores.",
     )
-    parser.add_argument("--judge-model", default="llama3", help="Ollama model for RAGAS judging.")
+    parser.add_argument(
+        "--judge-provider",
+        choices=["gemini", "ollama"],
+        default="gemini",
+        help="Which judge to use. Gemini is an API call; Ollama needs a local server.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help=(
+            "Judge model. Defaults to GEMINI_MODEL (or "
+            f"{DEFAULT_GEMINI_MODEL}) for Gemini and llama3 for Ollama. Consider "
+            "gemini-3.5-flash-lite to keep judging cost down."
+        ),
+    )
     parser.add_argument(
         "--embedding-model",
         default="sentence-transformers/all-MiniLM-L6-v2",
@@ -62,13 +95,31 @@ def main() -> None:
         "--num-thread",
         type=int,
         default=4,
-        help="CPU threads Ollama should use for judging.",
+        help="CPU threads Ollama should use for judging. Ignored for Gemini.",
     )
     parser.add_argument(
         "--num-gpu",
         type=int,
         default=0,
-        help="GPU layers Ollama should use. Use 0 to force CPU-only judging.",
+        help="GPU layers Ollama should use. Use 0 to force CPU-only. Ignored for Gemini.",
+    )
+    parser.add_argument(
+        "--answer-relevancy-strictness",
+        type=int,
+        default=1,
+        help=(
+            "How many questions answer_relevancy reverse-generates per example. Must be "
+            "1 for Gemini flash models, which reject multiple candidates per call."
+        ),
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help=(
+            "Concurrent judge calls. Defaults to 4 for Gemini and 1 for Ollama, since "
+            "local judging is the bottleneck but API judging is not."
+        ),
     )
     parser.add_argument(
         "--judge-timeout",
@@ -89,21 +140,74 @@ def main() -> None:
     if not records:
         raise SystemExit(f"No records found in {args.input}. Run rag_studio.eval_cli first.")
 
-    scores = run_ragas_with_ollama(
+    if args.judge_model:
+        judge_model = args.judge_model
+    elif args.judge_provider == "gemini":
+        judge_model = gemini_model_name()
+    else:
+        judge_model = "llama3"
+
+    max_workers = args.max_workers
+    if max_workers is None:
+        max_workers = 4 if args.judge_provider == "gemini" else 1
+
+    print(f"Judge: {args.judge_provider} / {judge_model} (max_workers={max_workers})")
+
+    scores = run_ragas(
         records,
-        judge_model=args.judge_model,
+        judge_model=judge_model,
         embedding_model=args.embedding_model,
         max_context_chars=args.max_context_chars,
         num_thread=args.num_thread,
         num_gpu=args.num_gpu,
         judge_timeout=args.judge_timeout,
         metric_names=args.metrics,
+        judge_provider=args.judge_provider,
+        max_workers=max_workers,
+        answer_relevancy_strictness=args.answer_relevancy_strictness,
     )
     _save_jsonl(scores, args.output)
     _print_summary(scores, args.output)
 
 
-def run_ragas_with_ollama(
+def _build_judge_llm(
+    provider: str,
+    judge_model: str,
+    num_thread: int,
+    num_gpu: int,
+):
+    """Construct the RAGAS judge model for the chosen provider."""
+    if provider == "gemini":
+        api_key = gemini_api_key()
+        if not api_key:
+            raise SystemExit(
+                "No Gemini API key found. Set GEMINI_API_KEY (or GOOGLE_API_KEY) before "
+                "judging with --judge-provider gemini."
+            )
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+        except ImportError as exc:
+            raise SystemExit(
+                "Install the Gemini judge dependency: pip install langchain-google-genai"
+            ) from exc
+        return ChatGoogleGenerativeAI(
+            model=judge_model,
+            temperature=0,
+            google_api_key=api_key,
+        )
+
+    from langchain_ollama import ChatOllama
+
+    return ChatOllama(
+        model=judge_model,
+        temperature=0,
+        num_thread=num_thread,
+        num_gpu=num_gpu,
+        num_predict=512,
+    )
+
+
+def run_ragas(
     records: list[dict[str, Any]],
     judge_model: str,
     embedding_model: str,
@@ -112,9 +216,11 @@ def run_ragas_with_ollama(
     num_gpu: int,
     judge_timeout: int,
     metric_names: list[str],
+    judge_provider: str = "gemini",
+    max_workers: int = 1,
+    answer_relevancy_strictness: int = 1,
 ) -> list[dict[str, Any]]:
     from datasets import Dataset
-    from langchain_ollama import ChatOllama
     from ragas import evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
@@ -134,25 +240,24 @@ def run_ragas_with_ollama(
             for record in records
         ]
     )
-    llm = ChatOllama(
-        model=judge_model,
-        temperature=0,
-        num_thread=num_thread,
-        num_gpu=num_gpu,
-        num_predict=512,
-    )
+    llm = _build_judge_llm(judge_provider, judge_model, num_thread, num_gpu)
     embeddings = SentenceTransformerLangchainEmbeddings(embedding_model)
     ragas_llm = LangchainLLMWrapper(llm)
     ragas_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
-    selected_metrics = _build_metrics(metric_names, ragas_llm, ragas_embeddings)
+    selected_metrics = _build_metrics(
+        metric_names,
+        ragas_llm,
+        ragas_embeddings,
+        answer_relevancy_strictness=answer_relevancy_strictness,
+    )
 
     result = evaluate(
         dataset,
         metrics=selected_metrics,
         llm=ragas_llm,
         embeddings=ragas_embeddings,
-        run_config=RunConfig(timeout=judge_timeout, max_workers=1, max_retries=1),
+        run_config=RunConfig(timeout=judge_timeout, max_workers=max_workers, max_retries=1),
         raise_exceptions=False,
     )
     score_rows = result.to_pandas().to_dict(orient="records")
@@ -211,6 +316,7 @@ def _build_metrics(
     metric_names: list[str],
     ragas_llm: Any,
     ragas_embeddings: Any,
+    answer_relevancy_strictness: int = 1,
 ) -> list[Any]:
     from ragas.metrics import (
         Faithfulness,
@@ -224,7 +330,18 @@ def _build_metrics(
         if metric_name == "faithfulness":
             metrics.append(Faithfulness(llm=ragas_llm))
         elif metric_name == "answer_relevancy":
-            metrics.append(ResponseRelevancy(llm=ragas_llm, embeddings=ragas_embeddings))
+            # strictness is how many questions RAGAS reverse-generates from the
+            # answer, requested as n candidates in a single call. Gemini flash models
+            # reject n > 1 with "Multiple candidates is not enabled for this model",
+            # so the default here is 1. Raise it for judges that allow candidates:
+            # a higher value averages over more generated questions and is less noisy.
+            metrics.append(
+                ResponseRelevancy(
+                    llm=ragas_llm,
+                    embeddings=ragas_embeddings,
+                    strictness=answer_relevancy_strictness,
+                )
+            )
         elif metric_name == "context_precision":
             metrics.append(LLMContextPrecisionWithReference(llm=ragas_llm))
         elif metric_name == "context_recall":
