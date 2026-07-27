@@ -256,6 +256,55 @@ button {
   border-bottom-color: var(--accent);
 }
 
+/* ---------- login ---------- */
+
+.login {
+  max-width: 380px;
+  margin-top: 26px;
+}
+
+.login form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.login label {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.login input {
+  padding: 11px 13px;
+  font: inherit;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--baseline);
+  border-radius: var(--radius-sm);
+}
+
+.login input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.login button[type="submit"] {
+  margin-top: 4px;
+  padding: 11px 20px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: 1px solid transparent;
+}
+
+.login button[type="submit"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* ---------- documents panel ---------- */
 
 .documents {

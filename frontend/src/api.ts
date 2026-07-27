@@ -119,6 +119,10 @@ export interface ReindexResponse {
   message: string;
 }
 
+function raiseIfUnauthorized(response: Response): void {
+  if (response.status === 401) throw new UnauthorizedError("Sign in to continue.");
+}
+
 async function readError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { detail?: unknown };
@@ -132,7 +136,10 @@ async function readError(response: Response): Promise<string> {
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const response = await fetch("/api/health");
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as HealthResponse;
 }
 
@@ -146,13 +153,53 @@ export async function askQuestion(
     body: JSON.stringify({ question }),
     signal,
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as QueryResponse;
+}
+
+export interface SessionResponse {
+  auth_required: boolean;
+  authenticated: boolean;
+}
+
+/** Thrown when the API reports no valid session, so the UI can show the login screen. */
+export class UnauthorizedError extends Error {}
+
+export async function fetchSession(): Promise<SessionResponse> {
+  const response = await fetch("/api/auth/session");
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
+  return (await response.json()) as SessionResponse;
+}
+
+export async function login(password: string): Promise<SessionResponse> {
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
+  return (await response.json()) as SessionResponse;
+}
+
+export async function logout(): Promise<void> {
+  await fetch("/api/auth/logout", { method: "POST" });
 }
 
 export async function fetchDocuments(): Promise<DocumentsResponse> {
   const response = await fetch("/api/documents");
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as DocumentsResponse;
 }
 
@@ -161,13 +208,19 @@ export async function uploadDocuments(files: FileList | File[]): Promise<Reindex
   for (const file of Array.from(files)) body.append("files", file);
 
   const response = await fetch("/api/documents", { method: "POST", body });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as ReindexResponse;
 }
 
 export async function reindexDocuments(): Promise<ReindexResponse> {
   const response = await fetch("/api/documents/reindex", { method: "POST" });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as ReindexResponse;
 }
 
@@ -175,7 +228,10 @@ export async function deleteDocument(name: string): Promise<ReindexResponse> {
   const response = await fetch(`/api/documents/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as ReindexResponse;
 }
 
@@ -189,6 +245,9 @@ export async function tailorResume(
     body: JSON.stringify({ job_description: jobDescription }),
     signal,
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    raiseIfUnauthorized(response);
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as TailorResponse;
 }

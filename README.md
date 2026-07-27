@@ -324,7 +324,34 @@ so a file sitting at 0 chunks is visibly on disk but not yet indexed.
 Reindexing swaps the agent and the index in one step behind a lock, so a concurrent request
 never sees a half-built index.
 
-**These endpoints have no authentication.** Uploads are restricted to `.pdf`, `.txt` and
+### Login
+
+Set `APP_PASSWORD` and every data endpoint requires a session:
+
+| Endpoint | Auth |
+| --- | --- |
+| `GET /healthz` | open — liveness probe, reveals nothing |
+| `GET /api/auth/session` | open — tells the UI whether to show the login screen |
+| `POST /api/auth/login` / `logout` | open |
+| everything else, including `/api/health` | session required |
+
+Leaving `APP_PASSWORD` unset disables auth, which keeps local development frictionless and
+is exactly the wrong thing to deploy — startup logs a warning when it happens.
+
+The session is a signed, `httpOnly`, `SameSite=Lax` cookie. It is a cookie rather than a
+bearer token in `localStorage` because `localStorage` is readable by any injected script and
+an `httpOnly` cookie is not. `APP_SECRET_KEY` signs it; rotating that value invalidates every
+existing session. Prefer `APP_PASSWORD_HASH` (pbkdf2-sha256, salted) over the plaintext
+variable in a deployment:
+
+```powershell
+python -c "from rag_studio.api.auth import hash_password; print(hash_password('your-password'))"
+```
+
+Failed logins are throttled per client — five attempts, then a five-minute lockout — so the
+password cannot be guessed online. Password comparison is constant-time.
+
+**Document writes still need thought even behind login.** Uploads are restricted to `.pdf`, `.txt` and
 `.md`, capped at 10 MB, and filenames are reduced to a bare validated name so a path like
 `../../.env` cannot escape the documents directory — but anyone who can reach the API can
 still add or delete documents. Set `ALLOW_DOCUMENT_WRITES=false` for any deployment that is

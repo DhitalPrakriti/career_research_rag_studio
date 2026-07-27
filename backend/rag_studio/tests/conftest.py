@@ -25,6 +25,12 @@ _PROVIDER_ENV_VARS = (
     "OPENAI_BASE_URL",
     "OLLAMA_MODEL",
     "OLLAMA_BASE_URL",
+    # Auth and document-write gates: cleared so existing tests exercise the open path and
+    # auth tests opt in explicitly, rather than depending on a developer's .env.
+    "APP_PASSWORD",
+    "APP_PASSWORD_HASH",
+    "APP_SECRET_KEY",
+    "ALLOW_DOCUMENT_WRITES",
 )
 
 

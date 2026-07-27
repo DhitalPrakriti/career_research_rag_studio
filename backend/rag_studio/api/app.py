@@ -14,12 +14,21 @@ from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from rag_studio.agents import CareerResearchAgent
+from rag_studio.api.auth import (
+    SESSION_COOKIE,
+    SESSION_TTL_SECONDS,
+    LoginThrottle,
+    auth_required,
+    create_session_token,
+    verify_password,
+    verify_session_token,
+)
 from rag_studio.api.documents import (
     ALLOWED_SUFFIXES,
     MAX_UPLOAD_BYTES,
@@ -38,10 +47,12 @@ from rag_studio.api.models import (
     GradeOut,
     HealthResponse,
     QueryRequest,
+    LoginRequest,
     QueryResponse,
     ReindexResponse,
     RequirementOut,
     RouteOut,
+    SessionResponse,
     StoredDocumentOut,
     TailorRequest,
     TailorResponse,
@@ -145,9 +156,15 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
 
     resolved_docs = Path(docs_dir or os.getenv("RAG_DOCS_DIR") or DEFAULT_DOCS_DIR)
     service = AgentService(resolved_docs)
+    throttle = LoginThrottle()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if not auth_required():
+            logger.warning(
+                "APP_PASSWORD is not set, so the API is unauthenticated. Set it before "
+                "exposing this on a network."
+            )
         service.load(resolved_docs)
         yield
 
@@ -164,11 +181,74 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[origin.strip() for origin in dev_origins.split(",") if origin.strip()],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
+        # The session cookie must ride along on a cross-origin call. Note that credentials
+        # require an explicit origin list, never "*", which is why CORS_ORIGINS is a list.
+        allow_credentials=True,
     )
 
-    @app.get("/api/health", response_model=HealthResponse)
+    def require_session(request: Request) -> None:
+        """Gate a route on a valid session cookie, unless no password is configured."""
+        if not auth_required():
+            return
+        if not verify_session_token(request.cookies.get(SESSION_COOKIE)):
+            raise HTTPException(status_code=401, detail="Sign in to continue.")
+
+    authenticated = [Depends(require_session)]
+
+    @app.get("/healthz")
+    def liveness() -> dict[str, str]:
+        """Unauthenticated probe for load balancers. Deliberately reveals nothing."""
+        return {"status": "ok"}
+
+    @app.get("/api/auth/session", response_model=SessionResponse)
+    def session(request: Request) -> SessionResponse:
+        required = auth_required()
+        return SessionResponse(
+            auth_required=required,
+            authenticated=(not required)
+            or verify_session_token(request.cookies.get(SESSION_COOKIE)),
+        )
+
+    @app.post("/api/auth/login", response_model=SessionResponse)
+    def login(request: Request, response: Response, payload: LoginRequest) -> SessionResponse:
+        if not auth_required():
+            # Nothing to log in to; say so rather than minting a pointless session.
+            return SessionResponse(auth_required=False, authenticated=True)
+
+        client = request.client.host if request.client else "unknown"
+        wait = throttle.retry_after(client)
+        if wait:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed attempts. Try again in {wait} seconds.",
+                headers={"Retry-After": str(wait)},
+            )
+
+        if not verify_password(payload.password):
+            throttle.record_failure(client)
+            raise HTTPException(status_code=401, detail="Incorrect password.")
+
+        throttle.record_success(client)
+        response.set_cookie(
+            SESSION_COOKIE,
+            create_session_token(),
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            # Secure only over HTTPS, or the cookie would be dropped on local http.
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        return SessionResponse(auth_required=True, authenticated=True)
+
+    @app.post("/api/auth/logout", response_model=SessionResponse)
+    def logout(response: Response) -> SessionResponse:
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return SessionResponse(auth_required=auth_required(), authenticated=False)
+
+    @app.get("/api/health", response_model=HealthResponse, dependencies=authenticated)
     def health() -> HealthResponse:
         provider, is_generated = _provider_description()
         return HealthResponse(
@@ -208,7 +288,7 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
                 ),
             )
 
-    @app.get("/api/documents", response_model=DocumentsResponse)
+    @app.get("/api/documents", response_model=DocumentsResponse, dependencies=authenticated)
     def get_documents() -> DocumentsResponse:
         """What is on disk, and how many chunks of each are actually indexed.
 
@@ -217,7 +297,7 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
         """
         return _documents_payload()
 
-    @app.post("/api/documents", response_model=ReindexResponse)
+    @app.post("/api/documents", response_model=ReindexResponse, dependencies=authenticated)
     def upload_documents(files: list[UploadFile] = File(...)) -> ReindexResponse:
         _require_writes()
         if not files:
@@ -244,7 +324,7 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
             message=f"Indexed {', '.join(saved)}.",
         )
 
-    @app.post("/api/documents/reindex", response_model=ReindexResponse)
+    @app.post("/api/documents/reindex", response_model=ReindexResponse, dependencies=authenticated)
     def reindex_documents() -> ReindexResponse:
         _require_writes()
         started = time.perf_counter()
@@ -257,7 +337,7 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
             message=f"Reindexed {len(payload_out.documents)} document(s).",
         )
 
-    @app.delete("/api/documents/{name}", response_model=ReindexResponse)
+    @app.delete("/api/documents/{name}", response_model=ReindexResponse, dependencies=authenticated)
     def remove_document(name: str) -> ReindexResponse:
         _require_writes()
         started = time.perf_counter()
@@ -275,7 +355,7 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
             message=f"Removed {name}.",
         )
 
-    @app.post("/api/query", response_model=QueryResponse)
+    @app.post("/api/query", response_model=QueryResponse, dependencies=authenticated)
     def query(request: QueryRequest) -> QueryResponse:
         agent = service.require_agent()
         started = time.perf_counter()
@@ -332,7 +412,7 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
             elapsed_ms=elapsed_ms,
         )
 
-    @app.post("/api/tailor", response_model=TailorResponse)
+    @app.post("/api/tailor", response_model=TailorResponse, dependencies=authenticated)
     def tailor(request: TailorRequest) -> TailorResponse:
         tailor_service = service.require_tailor()
         started = time.perf_counter()

@@ -2,13 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   askQuestion,
   fetchHealth,
+  fetchSession,
+  logout,
   tailorResume,
+  UnauthorizedError,
   type HealthResponse,
   type QueryResponse,
   type TailorResponse,
 } from "./api";
 import { Badge } from "./components/Badge";
 import { DocumentsPanel } from "./components/DocumentsPanel";
+import { LoginScreen } from "./components/LoginScreen";
 import { RouteCard } from "./components/RouteCard";
 import { SourceList } from "./components/SourceList";
 import { StatRow } from "./components/StatRow";
@@ -46,15 +50,31 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const pending = useRef<AbortController | null>(null);
 
   const refreshHealth = useCallback(() => {
     fetchHealth()
       .then(setHealth)
-      .catch(() => setHealth(null));
+      .catch((caught) => {
+        setHealth(null);
+        if (caught instanceof UnauthorizedError) setSignedIn(false);
+      });
   }, []);
 
-  useEffect(refreshHealth, [refreshHealth]);
+  // Ask the server whether a session is needed before rendering anything, so an
+  // unauthenticated visitor never sees the app shell or a flash of empty panels.
+  const checkSession = useCallback(() => {
+    fetchSession()
+      .then((session) => setSignedIn(session.authenticated))
+      .catch(() => setSignedIn(false));
+  }, []);
+
+  useEffect(checkSession, [checkSession]);
+
+  useEffect(() => {
+    if (signedIn) refreshHealth();
+  }, [signedIn, refreshHealth]);
 
   useEffect(() => () => pending.current?.abort(), []);
 
@@ -69,6 +89,10 @@ export default function App() {
       apply(await task(controller.signal));
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
+      if (caught instanceof UnauthorizedError) {
+        setSignedIn(false);
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "Something went wrong.");
     } finally {
       if (pending.current === controller) {
@@ -99,6 +123,19 @@ export default function App() {
 
   const noDocuments = health?.status === "no_documents";
 
+  if (signedIn === null) {
+    return (
+      <div className="shell">
+        <p className="notice">
+          <span className="spinner" aria-hidden="true" />
+          Loading…
+        </p>
+      </div>
+    );
+  }
+
+  if (!signedIn) return <LoginScreen onSignedIn={checkSession} />;
+
   return (
     <div className="shell">
       <header className="masthead">
@@ -117,6 +154,15 @@ export default function App() {
               {health.documents.length} document{health.documents.length === 1 ? "" : "s"} ·{" "}
               {health.chunks} chunks
             </span>
+            <button
+              type="button"
+              className="chip"
+              onClick={() => {
+                void logout().then(checkSession);
+              }}
+            >
+              Sign out
+            </button>
           </div>
         )}
       </header>

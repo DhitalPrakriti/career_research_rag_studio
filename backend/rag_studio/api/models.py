@@ -149,6 +149,17 @@ class ReindexResponse(BaseModel):
     message: str
 
 
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
+class SessionResponse(BaseModel):
+    auth_required: bool = Field(
+        description="False when APP_PASSWORD is unset, which leaves the API open."
+    )
+    authenticated: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     provider: str
