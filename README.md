@@ -7,24 +7,29 @@ ingestion → retrieval → evaluation → agentic routing → deployment.
 
 ## What it does
 
-Point it at your resumes, job descriptions, cover letters, class notes, and research
-papers, then ask questions like:
+**Paste a job description and get your resume rewritten against it.** The tool pulls the
+requirements out of the posting, retrieves evidence for each one from your own resumes, and
+rewrites that evidence into bullets aimed at the job.
 
-- "How should I tailor my resume for this job description?"
-- "Compare these two job descriptions — which one fits my skills better?"
-- "What skills from my resume are missing for this role?"
-- "What binary F1 score was achieved in the capstone project?"
+The part that matters: **it never invents experience.** A requirement with no supporting
+evidence is reported as a gap and is never written about — structurally, not by asking a
+model to behave. Paste a posting asking for Kubernetes and eight years of team leadership
+and it will tell you those are gaps rather than quietly claiming them.
 
-You get grounded answers with citations back to the source document and page. Retrieval
-quality is measured against a golden test set, and the agent exposes a full trace of every
-decision it made along the way.
+It also answers questions over the same documents, with citations back to the source page —
+"What binary F1 score was achieved in the capstone project?" — which is how the retrieval
+stack is evaluated.
+
+Every result shows its work: which requirements matched, the exact resume text each bullet
+came from, and the ordered trace of what the system did.
 
 ## Current state
 
-Working end to end today: document ingestion, hybrid retrieval with reranking,
-parent/child chunking, multi-query and HyDE, grounded generation with citations, a golden
-test set with deterministic metrics and failure analysis, and the LangGraph agent that
-routes, grades its own retrieval and retries with a rewritten query.
+Working end to end today: job-description tailoring with gap analysis, document ingestion,
+hybrid retrieval with reranking, parent/child chunking, multi-query and HyDE, grounded
+generation with citations, a golden test set with deterministic metrics and failure
+analysis, and the LangGraph agent that routes, grades its own retrieval and retries with a
+rewritten query.
 
 Also working: a FastAPI service and a React + TypeScript UI that surfaces the routing
 decision, the retrieval grade, the trace and the retrieved chunks for every answer.
@@ -75,6 +80,10 @@ backend/rag_studio/
     trace.py                ← per-node trace events
     langsmith.py            ← LangSmith run configuration
 
+  tailoring/
+    matching.py             ← requirement extraction, rarity-weighted scoring, LLM audit
+    service.py              ← orchestration; only supported requirements reach the rewriter
+
   evaluation/
     golden_set.py           ← golden set loading, metrics, negative-control handling
     agent_eval.py           ← agent-level eval with route/grade/rewrite columns
@@ -100,6 +109,42 @@ frontend/
 
 Routing, grading and rewriting live under `agents/` rather than `retrieval/` because they
 are decisions the agent makes *about* retrieval, not retrieval strategies themselves.
+
+### Tailoring to a job description
+
+```
+job description ─→ extract requirements ─→ retrieve evidence per requirement
+                                                      ↓
+        tailored bullets ←─ rewrite ←─ hide gaps ←─ verify with an LLM
+                                                      ↓
+                                              gap list (never written about)
+```
+
+1. **Extract** the requirements from the posting. An LLM does this; bullet-list parsing is
+   the fallback so it works with no API key.
+2. **Retrieve** evidence for each requirement separately, with precise child-chunk settings.
+   A requirement is a narrow claim, so wide retrieval would blur which chunk supports it.
+3. **Score** the evidence by term overlap **weighted by rarity across your resumes**. Flat
+   overlap is dangerous here: "Experience using Kubernetes for infrastructure automation"
+   scored 0.67 — "matched" — against a resume with no Kubernetes, because the generic words
+   carried it while the one decisive term was absent and counted for nothing. Under rarity
+   weighting an unseen specialist term gets the maximum weight and can never be matched.
+4. **Verify** every requirement against its evidence in one batched LLM call. Weighted
+   overlap still cannot judge "8 years leading a platform engineering team" — there is no
+   rare term to key on, only a claim about seniority — so the final status comes from
+   reading. Gaps are audited too, not just matches: a one-way ratchet could strip a false
+   match but never restore a false gap, which is how "Proficiency in Python" came back as a
+   gap against a resume covered in Python.
+5. **Rewrite** only the supported requirements. The rewriter is never given a gap's text, so
+   there is no path by which one can become a bullet.
+
+Thresholds are deliberately strict (0.6 matched, 0.35 partial) because the errors are not
+symmetric: a false gap costs you a bullet you could have had, a false match puts an
+unsupported claim in front of an employer.
+
+`POST /api/tailor` returns the per-requirement statuses, the bullets with the source ids
+they were written from, the gap list, a recommendation of which of your resumes to start
+from, and the trace.
 
 ### The agent graph
 
@@ -252,7 +297,10 @@ behind a disclosure so a citation can be checked against the exact text the mode
 a negative-control question such as "What is my GPA?" to watch the rewrite-and-retry path
 fire and the agent decline to answer.
 
-Endpoints: `GET /api/health`, `POST /api/query`, and OpenAPI docs at `/docs`.
+Endpoints: `GET /api/health`, `POST /api/tailor`, `POST /api/query`, and OpenAPI docs
+at `/docs`.
+
+The UI has two modes: **Tailor to a job** (paste a posting) and **Ask a question**.
 
 Documents are ingested once at startup from `docs/` (override with `RAG_DOCS_DIR`), because
 ingestion builds an embedding index in seconds while a query takes milliseconds.

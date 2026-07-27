@@ -56,6 +56,38 @@ export interface QueryResponse {
   elapsed_ms: number;
 }
 
+export type RequirementStatus = "matched" | "partial" | "missing";
+
+export interface Requirement {
+  id: number;
+  text: string;
+  status: RequirementStatus;
+  score: number;
+  evidence: Context[];
+}
+
+export interface Bullet {
+  requirement_id: number;
+  text: string;
+  source_ids: number[];
+}
+
+export interface TailorResponse {
+  provider: string;
+  is_generated: boolean;
+  coverage: number;
+  recommended_resume: string | null;
+  matched_count: number;
+  partial_count: number;
+  missing_count: number;
+  requirements: Requirement[];
+  bullets: Bullet[];
+  citations: Citation[];
+  contexts: Context[];
+  trace: TraceEvent[];
+  elapsed_ms: number;
+}
+
 export interface HealthResponse {
   status: string;
   provider: string;
@@ -93,4 +125,18 @@ export async function askQuestion(
   });
   if (!response.ok) throw new Error(await readError(response));
   return (await response.json()) as QueryResponse;
+}
+
+export async function tailorResume(
+  jobDescription: string,
+  signal?: AbortSignal,
+): Promise<TailorResponse> {
+  const response = await fetch("/api/tailor", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_description: jobDescription }),
+    signal,
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as TailorResponse;
 }

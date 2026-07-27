@@ -183,6 +183,157 @@ button {
   cursor: not-allowed;
 }
 
+.ask textarea {
+  width: 100%;
+  padding: 12px 13px;
+  font: inherit;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--baseline);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  min-height: 180px;
+}
+
+.ask textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ask form:has(textarea) {
+  flex-direction: column;
+  gap: 12px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.form-actions button[type="submit"] {
+  padding: 11px 20px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: 1px solid transparent;
+}
+
+.form-actions button[type="submit"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---------- mode tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tab {
+  padding: 9px 15px;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  margin-bottom: -1px;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+/* ---------- tailoring results ---------- */
+
+.bullets {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.bullets li {
+  margin-bottom: 9px;
+  font-size: 14.5px;
+}
+
+.bullet-sources {
+  margin-left: 7px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.requirement {
+  border-top: 1px solid var(--hairline);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.requirement:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.requirement summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  list-style: none;
+}
+
+.requirement summary::-webkit-details-marker {
+  display: none;
+}
+
+.requirement-text {
+  font-size: 14px;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.requirement-bullet {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: var(--page-plane);
+  border-left: 3px solid var(--good);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.requirement-note {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.evidence {
+  margin: 7px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.evidence li {
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+}
+
 .examples {
   display: flex;
   flex-wrap: wrap;

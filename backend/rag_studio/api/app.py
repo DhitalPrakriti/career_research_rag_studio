@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from rag_studio.agents import CareerResearchAgent
 from rag_studio.api.models import (
+    BulletOut,
     CitationOut,
     ContextOut,
     DocumentOut,
@@ -26,11 +27,15 @@ from rag_studio.api.models import (
     HealthResponse,
     QueryRequest,
     QueryResponse,
+    RequirementOut,
     RouteOut,
+    TailorRequest,
+    TailorResponse,
     TraceEventOut,
 )
 from rag_studio.evaluation.golden_set import answer_refuses
 from rag_studio.llm import resolve_provider
+from rag_studio.tailoring import MATCHED, MISSING, PARTIAL, ResumeTailor
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,7 @@ class AgentService:
 
     def __init__(self) -> None:
         self.agent: CareerResearchAgent | None = None
+        self.tailor: ResumeTailor | None = None
         self.documents: list[DocumentOut] = []
         self.chunks = 0
 
@@ -62,6 +68,8 @@ class AgentService:
         agent.ingest(list(paths))
 
         self.agent = agent
+        # Shares the one ingested pipeline; tailoring needs the same index.
+        self.tailor = ResumeTailor(pipeline=agent.pipeline)
         self.chunks = len(agent.pipeline.chunks)
         self.documents = [DocumentOut(title=path.name) for path in paths]
         logger.info(
@@ -80,6 +88,17 @@ class AgentService:
                 ),
             )
         return self.agent
+
+    def require_tailor(self) -> ResumeTailor:
+        if self.tailor is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"No documents are loaded. Put your resume PDFs in {DEFAULT_DOCS_DIR}/ "
+                    "(or set RAG_DOCS_DIR) and restart."
+                ),
+            )
+        return self.tailor
 
 
 def _provider_description() -> tuple[str, bool]:
@@ -192,8 +211,94 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
             elapsed_ms=elapsed_ms,
         )
 
+    @app.post("/api/tailor", response_model=TailorResponse)
+    def tailor(request: TailorRequest) -> TailorResponse:
+        tailor_service = service.require_tailor()
+        started = time.perf_counter()
+        try:
+            result = tailor_service.tailor(
+                request.job_description,
+                max_requirements=request.max_requirements,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+        provider, _ = _provider_description()
+        source_ids = {
+            context.chunk.text: index
+            for index, context in enumerate(result.contexts, start=1)
+        }
+
+        return TailorResponse(
+            provider=provider,
+            is_generated=result.is_generated,
+            coverage=result.coverage,
+            recommended_resume=result.recommended_resume,
+            matched_count=sum(1 for m in result.matches if m.status == MATCHED),
+            partial_count=sum(1 for m in result.matches if m.status == PARTIAL),
+            missing_count=sum(1 for m in result.matches if m.status == MISSING),
+            requirements=[
+                RequirementOut(
+                    id=match.requirement.id,
+                    text=match.requirement.text,
+                    status=match.status,
+                    score=match.score,
+                    evidence=[
+                        _context_out(item, source_ids.get(item.chunk.text, 0))
+                        for item in match.evidence
+                    ],
+                )
+                for match in result.matches
+            ],
+            bullets=[
+                BulletOut(
+                    requirement_id=bullet.requirement_id,
+                    text=bullet.text,
+                    source_ids=bullet.source_ids,
+                )
+                for bullet in result.bullets
+            ],
+            citations=[
+                CitationOut(
+                    source_id=citation.source_id,
+                    title=citation.title,
+                    location=citation.location,
+                    score=citation.score,
+                )
+                for citation in result.citations
+            ],
+            contexts=[
+                _context_out(context, index)
+                for index, context in enumerate(result.contexts, start=1)
+            ],
+            trace=[
+                TraceEventOut(
+                    step=step,
+                    node=event.node,
+                    message=event.message,
+                    details={key: str(value) for key, value in event.details.items()},
+                )
+                for step, event in enumerate(result.trace, start=1)
+            ],
+            elapsed_ms=elapsed_ms,
+        )
+
     _mount_frontend(app)
     return app
+
+
+def _context_out(result: object, source_id: int) -> ContextOut:
+    chunk = getattr(result, "chunk")
+    metadata = chunk.metadata
+    return ContextOut(
+        source_id=source_id,
+        text=chunk.text,
+        score=float(getattr(result, "score", 0.0)),
+        title=str(metadata.get("title") or "Untitled"),
+        page=_as_int(metadata.get("page")),
+        chunk_index=_as_int(metadata.get("chunk_index")),
+    )
 
 
 # Intentionally no module-level `app = create_app()`. That would run load_dotenv() at

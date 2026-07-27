@@ -1,21 +1,47 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { askQuestion, fetchHealth, type HealthResponse, type QueryResponse } from "./api";
+import {
+  askQuestion,
+  fetchHealth,
+  tailorResume,
+  type HealthResponse,
+  type QueryResponse,
+  type TailorResponse,
+} from "./api";
 import { Badge } from "./components/Badge";
 import { RouteCard } from "./components/RouteCard";
 import { SourceList } from "./components/SourceList";
 import { StatRow } from "./components/StatRow";
+import { TailorResult } from "./components/TailorResult";
 import { TraceTimeline } from "./components/TraceTimeline";
+
+type Mode = "tailor" | "ask";
 
 const EXAMPLE_QUESTIONS = [
   "What binary F1 score was achieved in the capstone project?",
   "Which resume best fits an AI engineering role?",
-  "What database was used for conversation memory?",
   "What is my GPA?",
 ];
 
+const SAMPLE_JD = `AI Engineer
+
+Responsibilities:
+- Build and evaluate RAG pipelines over internal documents
+- Work with embeddings and vector search at scale
+- Deploy containerised services to Google Cloud Run
+
+Requirements:
+- Strong Python, PyTorch and deep learning experience
+- Experience with FAISS or a comparable vector database
+- Familiarity with LLM evaluation and prompt engineering
+- Kubernetes and Terraform for infrastructure automation
+- 8 years leading a platform engineering team`;
+
 export default function App() {
+  const [mode, setMode] = useState<Mode>("tailor");
+  const [jobDescription, setJobDescription] = useState("");
   const [question, setQuestion] = useState("");
-  const [result, setResult] = useState<QueryResponse | null>(null);
+  const [tailored, setTailored] = useState<TailorResponse | null>(null);
+  const [answer, setAnswer] = useState<QueryResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -29,10 +55,7 @@ export default function App() {
 
   useEffect(() => () => pending.current?.abort(), []);
 
-  const submit = useCallback(async (asked: string) => {
-    const trimmed = asked.trim();
-    if (!trimmed) return;
-
+  const run = useCallback(async <T,>(task: (signal: AbortSignal) => Promise<T>, apply: (value: T) => void) => {
     pending.current?.abort();
     const controller = new AbortController();
     pending.current = controller;
@@ -40,10 +63,9 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      setResult(await askQuestion(trimmed, controller.signal));
+      apply(await task(controller.signal));
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
-      setResult(null);
       setError(caught instanceof Error ? caught.message : "Something went wrong.");
     } finally {
       if (pending.current === controller) {
@@ -53,6 +75,25 @@ export default function App() {
     }
   }, []);
 
+  const submitJd = () => {
+    if (jobDescription.trim().length < 20) return;
+    setTailored(null);
+    void run((signal) => tailorResume(jobDescription, signal), setTailored);
+  };
+
+  const submitQuestion = (asked: string) => {
+    if (!asked.trim()) return;
+    setAnswer(null);
+    void run((signal) => askQuestion(asked.trim(), signal), setAnswer);
+  };
+
+  const switchMode = (next: Mode) => {
+    pending.current?.abort();
+    setMode(next);
+    setError(null);
+    setLoading(false);
+  };
+
   const noDocuments = health?.status === "no_documents";
 
   return (
@@ -61,8 +102,9 @@ export default function App() {
         <div>
           <h1>Career Research RAG Studio</h1>
           <p>
-            Agentic retrieval over personal career documents. Every answer shows the route
-            the agent chose, how it graded its own retrieval, and the exact chunks it read.
+            Paste a job description and get your resume rewritten against it — every bullet
+            grounded in your own resume text, every unmet requirement listed as a gap rather
+            than invented.
           </p>
         </div>
         {health && (
@@ -76,50 +118,119 @@ export default function App() {
         )}
       </header>
 
-      <section className="ask">
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void submit(question);
-          }}
+      <nav className="tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "tailor"}
+          className={mode === "tailor" ? "tab is-active" : "tab"}
+          onClick={() => switchMode("tailor")}
         >
-          <input
-            type="text"
-            value={question}
-            placeholder="Ask about your resumes, projects, or coursework…"
-            aria-label="Your question"
-            onChange={(event) => setQuestion(event.target.value)}
-            disabled={loading}
-          />
-          <button type="submit" disabled={loading || !question.trim()}>
-            {loading ? "Thinking…" : "Ask"}
-          </button>
-        </form>
-
-        <div className="examples">
-          <span>Try:</span>
-          {EXAMPLE_QUESTIONS.map((example) => (
-            <button
-              type="button"
-              className="chip"
-              key={example}
-              disabled={loading}
-              onClick={() => {
-                setQuestion(example);
-                void submit(example);
-              }}
-            >
-              {example}
-            </button>
-          ))}
-        </div>
-      </section>
+          Tailor to a job
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "ask"}
+          className={mode === "ask" ? "tab is-active" : "tab"}
+          onClick={() => switchMode("ask")}
+        >
+          Ask a question
+        </button>
+      </nav>
 
       {noDocuments && (
         <p className="notice">
-          No documents are loaded. Put PDFs in <code>docs/</code> (or set{" "}
+          No documents are loaded. Put your resume PDFs in <code>docs/</code> (or set{" "}
           <code>RAG_DOCS_DIR</code>) and restart the server.
         </p>
+      )}
+
+      {mode === "tailor" ? (
+        <section className="ask">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitJd();
+            }}
+          >
+            <textarea
+              value={jobDescription}
+              placeholder="Paste the full job description here…"
+              aria-label="Job description"
+              rows={12}
+              onChange={(event) => setJobDescription(event.target.value)}
+              disabled={loading}
+            />
+            <div className="form-actions">
+              <button
+                type="submit"
+                disabled={loading || jobDescription.trim().length < 20}
+              >
+                {loading ? "Tailoring…" : "Tailor my resume"}
+              </button>
+              <button
+                type="button"
+                className="chip"
+                disabled={loading}
+                onClick={() => setJobDescription(SAMPLE_JD)}
+              >
+                Use a sample posting
+              </button>
+              {jobDescription && (
+                <button
+                  type="button"
+                  className="chip"
+                  disabled={loading}
+                  onClick={() => {
+                    setJobDescription("");
+                    setTailored(null);
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </form>
+        </section>
+      ) : (
+        <section className="ask">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitQuestion(question);
+            }}
+          >
+            <input
+              type="text"
+              value={question}
+              placeholder="Ask about your resumes, projects, or coursework…"
+              aria-label="Your question"
+              onChange={(event) => setQuestion(event.target.value)}
+              disabled={loading}
+            />
+            <button type="submit" disabled={loading || !question.trim()}>
+              {loading ? "Thinking…" : "Ask"}
+            </button>
+          </form>
+          <div className="examples">
+            <span>Try:</span>
+            {EXAMPLE_QUESTIONS.map((example) => (
+              <button
+                type="button"
+                className="chip"
+                key={example}
+                disabled={loading}
+                onClick={() => {
+                  setQuestion(example);
+                  submitQuestion(example);
+                }}
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
       {error && (
@@ -128,52 +239,50 @@ export default function App() {
         </p>
       )}
 
-      {loading && !result && (
+      {loading && (
         <p className="notice">
           <span className="spinner" aria-hidden="true" />
-          Routing, retrieving, grading, generating…
+          {mode === "tailor"
+            ? "Extracting requirements, retrieving evidence, rewriting bullets…"
+            : "Routing, retrieving, grading, generating…"}
         </p>
       )}
 
-      {result && (
+      {mode === "tailor" && tailored && !loading && (
         <>
-          <StatRow result={result} />
+          <TailorResult result={tailored} />
+          <TraceTimeline trace={tailored.trace} />
+          <SourceList citations={tailored.citations} contexts={tailored.contexts} />
+        </>
+      )}
 
+      {mode === "ask" && answer && !loading && (
+        <>
+          <StatRow result={answer} />
           <section className="card" style={{ marginTop: 16 }}>
             <div className="answer-head">
               <h2 style={{ margin: 0, flex: 1 }}>Answer</h2>
-              <Badge tone={result.is_generated ? "good" : "warning"}>
-                {result.is_generated ? "Generated" : "Extractive fallback"}
+              <Badge tone={answer.is_generated ? "good" : "warning"}>
+                {answer.is_generated ? "Generated" : "Extractive fallback"}
               </Badge>
-              {result.refused && <Badge tone="neutral">Declined to answer</Badge>}
-              {result.retry_count > 0 && (
+              {answer.refused && <Badge tone="neutral">Declined to answer</Badge>}
+              {answer.retry_count > 0 && (
                 <Badge tone="warning">
-                  {result.retry_count} rewrite{result.retry_count === 1 ? "" : "s"}
+                  {answer.retry_count} rewrite{answer.retry_count === 1 ? "" : "s"}
                 </Badge>
               )}
             </div>
-
-            <p className="answer-body">{result.answer}</p>
-
-            {!result.is_generated && (
+            <p className="answer-body">{answer.answer}</p>
+            {!answer.is_generated && (
               <p className="notice">
                 No LLM is configured, so this is extracted source text rather than a
-                generated answer. Set a provider in <code>.env</code> to get real
-                generation — and never score a run like this for faithfulness.
-              </p>
-            )}
-
-            {result.refused && result.is_generated && (
-              <p className="notice">
-                The agent reported that the documents do not contain this. For the
-                negative-control questions in the golden set, that is the correct outcome.
+                generated answer. Set a provider in <code>.env</code> for real generation.
               </p>
             )}
           </section>
-
-          <RouteCard route={result.route} grade={result.grade} />
-          <TraceTimeline trace={result.trace} />
-          <SourceList citations={result.citations} contexts={result.contexts} />
+          <RouteCard route={answer.route} grade={answer.grade} />
+          <TraceTimeline trace={answer.trace} />
+          <SourceList citations={answer.citations} contexts={answer.contexts} />
         </>
       )}
     </div>

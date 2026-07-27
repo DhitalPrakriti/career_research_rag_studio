@@ -149,6 +149,118 @@ def test_empty_question_is_rejected(client: TestClient) -> None:
     assert client.post("/api/query", json={"question": ""}).status_code == 422
 
 
+JOB_DESCRIPTION = """
+Requirements:
+- Build RAG pipelines with FAISS and embeddings
+- Lead a team of twelve site reliability engineers
+"""
+
+
+class _StubTailor:
+    """Stands in for ResumeTailor with one supported and one missing requirement."""
+
+    def tailor(self, job_description: str, max_requirements: int = 25):
+        from rag_studio.tailoring.matching import (
+            MATCHED,
+            MISSING,
+            Requirement,
+            RequirementMatch,
+        )
+        from rag_studio.tailoring.service import TailoredBullet, TailoringResult
+
+        evidence = RetrievedChunk(
+            chunk=Chunk(
+                id="c1",
+                text="Built a local RAG pipeline with FAISS embeddings.",
+                metadata={"title": "ai_ml.pdf", "page": 1},
+            ),
+            score=0.8,
+        )
+        matches = [
+            RequirementMatch(
+                Requirement(1, "Build RAG pipelines with FAISS and embeddings"),
+                MATCHED,
+                0.75,
+                [evidence],
+            ),
+            RequirementMatch(
+                Requirement(2, "Lead a team of twelve site reliability engineers"),
+                MISSING,
+                0.0,
+                [],
+            ),
+        ]
+        return TailoringResult(
+            job_description=job_description,
+            matches=matches,
+            bullets=[TailoredBullet(1, "Built a RAG pipeline with FAISS embeddings.", [1])],
+            recommended_resume="ai_ml.pdf",
+            coverage=0.5,
+            citations=[Citation(source_id=1, title="ai_ml.pdf", location="page 1", score=0.8)],
+            contexts=[evidence],
+            trace=[],
+            is_generated=True,
+        )
+
+
+@pytest.fixture
+def tailor_client(monkeypatch: pytest.MonkeyPatch, stub_agent: _StubAgent):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    def fake_load(self, docs_dir):  # noqa: ANN001
+        self.agent = stub_agent
+        self.tailor = _StubTailor()
+        self.chunks = 15
+        self.documents = [app_module.DocumentOut(title="ai_ml.pdf")]
+
+    monkeypatch.setattr(app_module.AgentService, "load", fake_load)
+    with TestClient(create_app("docs")) as test_client:
+        yield test_client
+
+
+def test_tailor_returns_gaps_bullets_and_coverage(tailor_client: TestClient) -> None:
+    response = tailor_client.post("/api/tailor", json={"job_description": JOB_DESCRIPTION})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["coverage"] == 0.5
+    assert body["matched_count"] == 1
+    assert body["missing_count"] == 1
+    assert body["recommended_resume"] == "ai_ml.pdf"
+    assert body["bullets"][0]["requirement_id"] == 1
+    assert body["bullets"][0]["source_ids"] == [1]
+
+    statuses = {r["id"]: r["status"] for r in body["requirements"]}
+    assert statuses == {1: "matched", 2: "missing"}
+
+
+def test_tailor_shows_no_evidence_for_a_gap(tailor_client: TestClient) -> None:
+    """A gap listing "supporting" evidence would mislead the user into claiming it."""
+    body = tailor_client.post(
+        "/api/tailor", json={"job_description": JOB_DESCRIPTION}
+    ).json()
+
+    gap = next(r for r in body["requirements"] if r["status"] == "missing")
+
+    assert gap["evidence"] == []
+    assert gap["id"] not in {b["requirement_id"] for b in body["bullets"]}
+
+
+def test_tailor_rejects_a_job_description_that_is_too_short(
+    tailor_client: TestClient,
+) -> None:
+    assert tailor_client.post("/api/tailor", json={"job_description": "AI job"}).status_code == 422
+
+
+def test_tailor_without_documents_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module.AgentService, "load", lambda self, docs_dir: None)
+    with TestClient(create_app("docs")) as client:
+        response = client.post("/api/tailor", json={"job_description": JOB_DESCRIPTION})
+
+    assert response.status_code == 503
+
+
 def test_query_without_documents_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         app_module.AgentService,

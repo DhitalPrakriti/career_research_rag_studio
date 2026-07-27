@@ -76,6 +76,46 @@ class QueryResponse(BaseModel):
     elapsed_ms: int
 
 
+class TailorRequest(BaseModel):
+    job_description: str = Field(min_length=20, max_length=20000)
+    max_requirements: int = Field(default=25, ge=1, le=40)
+
+
+class RequirementOut(BaseModel):
+    id: int
+    text: str
+    status: str = Field(description="matched, partial or missing")
+    score: float
+    evidence: list[ContextOut]
+
+
+class BulletOut(BaseModel):
+    requirement_id: int
+    text: str
+    source_ids: list[int]
+
+
+class TailorResponse(BaseModel):
+    provider: str
+    is_generated: bool = Field(
+        description=(
+            "False when no bullets were generated — no LLM configured, or the rewrite "
+            "could not be parsed. The gap analysis is still valid."
+        )
+    )
+    coverage: float = Field(description="Share of requirements with evidence; partial counts half.")
+    recommended_resume: str | None
+    matched_count: int
+    partial_count: int
+    missing_count: int
+    requirements: list[RequirementOut]
+    bullets: list[BulletOut]
+    citations: list[CitationOut]
+    contexts: list[ContextOut]
+    trace: list[TraceEventOut]
+    elapsed_ms: int
+
+
 class DocumentOut(BaseModel):
     title: str
     pages: int | None = None
