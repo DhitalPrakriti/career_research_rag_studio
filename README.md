@@ -19,19 +19,16 @@ You get grounded answers with citations back to the source document and page. Re
 quality is measured against a golden test set, and the agent exposes a full trace of every
 decision it made along the way.
 
-## Build status
+## Current state
 
-| Week | Focus | Status |
-| --- | --- | --- |
-| 1 | Ingestion pipeline (loader, chunker, embeddings, FAISS) | ✅ Done |
-| 2 | Answer generation + citations | ✅ Done |
-| 3 | Hybrid retrieval + reranking, parent/child, multi-query, HyDE | ✅ Done |
-| 4 | Golden test set + deterministic eval + failure analysis | ✅ Done |
-| 5 | Agentic routing with LangGraph, grading, rewrite, tracing | ✅ Done |
-| 6 | FastAPI + React UI + Docker + Cloud Run | ⬜ Not started |
+Working end to end today: document ingestion, hybrid retrieval with reranking,
+parent/child chunking, multi-query and HyDE, grounded generation with citations, a golden
+test set with deterministic metrics and failure analysis, and the LangGraph agent that
+routes, grades its own retrieval and retries with a rewritten query.
 
-Week 6 has not been started: there is no `backend/api`, no `frontend/`, and no
-`Dockerfile` yet. Everything today is driven through the CLIs below.
+Not built yet: the HTTP API, the web UI, and containerised deployment — there is no
+`backend/api`, no `frontend/` and no `Dockerfile`. Everything is driven through the CLIs
+below.
 
 ## Architecture
 
@@ -126,7 +123,7 @@ route_query ──┬─→ direct_answer ────────────�
 | Orchestration | LangGraph |
 | Evaluation | deterministic metrics + RAGAS |
 | Observability | local trace + LangSmith |
-| Backend / Frontend / Deployment | not yet built (Week 6) |
+| Backend / Frontend / Deployment | not yet built |
 
 ## Setup
 
@@ -225,7 +222,7 @@ The three null metrics returned `None` from the local llama3 judge rather than a
 and the graded runs were made against *extractive* answers (no LLM was configured at the
 time), which is not a fair target for faithfulness or answer relevancy. Getting real
 numbers here requires re-running with an LLM-backed generator and a judge that reliably
-returns parseable output — that is the open Week 4 thread.
+returns parseable output — that is the open evaluation thread.
 
 ## Key learning outcomes
 
@@ -235,4 +232,4 @@ returns parseable output — that is the open Week 4 thread.
 - Cross-encoder reranking
 - Deterministic evaluation, negative controls, and metric saturation
 - Agentic query routing, retrieval grading, and self-correcting retry loops
-- Production deployment with Docker + Cloud Run (Week 6, pending)
+- Production deployment with Docker + Cloud Run (pending)
