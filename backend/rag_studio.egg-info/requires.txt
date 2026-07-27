@@ -4,6 +4,9 @@ pypdf==6.10.2
 python-dotenv==1.2.2
 sentence-transformers==5.4.1
 
+[agent]
+langgraph
+
 [dev]
 pytest==8.4.2
 

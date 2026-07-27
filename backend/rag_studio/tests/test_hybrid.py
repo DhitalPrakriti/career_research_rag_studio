@@ -1,4 +1,4 @@
-from rag_studio.hybrid import reciprocal_rank_fusion
+from rag_studio.retrieval.hybrid import reciprocal_rank_fusion
 from rag_studio.schema import Chunk, RetrievedChunk
 
 

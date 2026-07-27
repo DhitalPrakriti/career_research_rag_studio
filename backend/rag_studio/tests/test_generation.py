@@ -1,4 +1,6 @@
-from rag_studio.generation import _build_grounded_prompt, trim_contexts
+import pytest
+
+from rag_studio.generation.generator import _build_grounded_prompt, _ollama_options, trim_contexts
 from rag_studio.schema import Chunk, RetrievedChunk
 
 
@@ -45,3 +47,24 @@ def test_trim_contexts_truncates_first_chunk_if_it_exceeds_budget() -> None:
     assert len(trimmed) == 1
     assert trimmed[0].chunk.id == "large"
     assert trimmed[0].chunk.text == "x" * 9 + "..."
+
+
+def test_ollama_options_reads_runtime_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OLLAMA_NUM_GPU", "0")
+    monkeypatch.setenv("OLLAMA_NUM_THREAD", "4")
+    monkeypatch.setenv("OLLAMA_NUM_PREDICT", "256")
+
+    assert _ollama_options() == {
+        "num_gpu": 0,
+        "num_thread": 4,
+        "num_predict": 256,
+    }
+
+
+def test_ollama_options_rejects_non_integer_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_NUM_GPU", "none")
+
+    with pytest.raises(RuntimeError, match="OLLAMA_NUM_GPU"):
+        _ollama_options()

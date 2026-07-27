@@ -1,104 +1,235 @@
 # Career + Research RAG Studio
-A production-grade RAG (Retrieval-Augmented Generation) system for querying
-your personal career documents — resumes, job descriptions, class notes, and research papers.
+
+A production-grade RAG (Retrieval-Augmented Generation) system for querying your personal
+career documents — resumes, job descriptions, class notes, and research papers.
 Built by Prakriti Dhital as a portfolio project covering the full RAG lifecycle:
 ingestion → retrieval → evaluation → agentic routing → deployment.
 
-# What it does
+## What it does
 
-Upload your resumes, job descriptions, cover letters, class notes, and research papers
-Ask questions like:
+Point it at your resumes, job descriptions, cover letters, class notes, and research
+papers, then ask questions like:
 
-"How should I tailor my resume for this job description?"
-"Compare these two job descriptions — which one fits my skills better?"
-"What skills from my resume are missing for this role?"
-"Summarize what I've learned in my networking course"
+- "How should I tailor my resume for this job description?"
+- "Compare these two job descriptions — which one fits my skills better?"
+- "What skills from my resume are missing for this role?"
+- "What binary F1 score was achieved in the capstone project?"
 
+You get grounded answers with citations back to the source document and page. Retrieval
+quality is measured against a golden test set, and the agent exposes a full trace of every
+decision it made along the way.
 
-Get grounded, cited answers with source references
-Evaluate retrieval quality automatically using RAGAS
+## Current state
 
+Working end to end today: document ingestion, hybrid retrieval with reranking,
+parent/child chunking, multi-query and HyDE, grounded generation with citations, a golden
+test set with deterministic metrics and failure analysis, and the LangGraph agent that
+routes, grades its own retrieval and retries with a rewritten query.
 
-# Architecture
-data/uploads/          ← your documents go here
-      ↓
-backend/ingestion/     ← PDF loading, chunking, embedding, FAISS index
-      ↓
-backend/retrieval/     ← hybrid search (dense + BM25), reranking, HyDE
-      ↓
-backend/generation/    ← prompt grounding, citation, LLM call
-      ↓
-backend/agents/        ← LangGraph router: decides which retriever to use
-      ↓
-backend/api/           ← FastAPI endpoints
-      ↓
-frontend/              ← React UI with chat + citation display
-      ↓
-evaluation/            ← RAGAS metrics, golden test set, comparison dashboard
+Not built yet: the HTTP API, the web UI, and containerised deployment — there is no
+`backend/api`, no `frontend/` and no `Dockerfile`. Everything is driven through the CLIs
+below.
 
+## Architecture
 
-# Tech Stack
-LayerTechnologyDocument parsingPyMuPDFChunkingLangChain splitters + custom recursiveEmbeddingssentence-transformers → OpenAIVector storeFAISS → QdrantSparse retrievalBM25 (rank-bm25)Rerankercross-encoder (sentence-transformers)LLMGoogle Gemini / GPT-4o-miniOrchestrationLangChain + LangGraphEvaluationRAGASBackendFastAPIFrontendReact + TypeScriptObservabilityLangSmithDeploymentDocker + Google Cloud Run
+The package is organised by pipeline stage. Each stage is a subpackage that re-exports
+its public names, so `from rag_studio.agents import CareerResearchAgent` works as well as
+the full module path.
 
-# Setup
-bash# 1. Clone and enter project
-git clone <your-repo>
-cd career-rag-studio
+```
+docs/                       ← source documents (PDFs) live here
+evaluation/
+  golden_set.jsonl          ← 14 golden examples, incl. 3 negative controls
+  runs/                     ← eval outputs (gitignored)
+backend/rag_studio/
+  schema.py                 ← core types: Document, Chunk, RetrievedChunk, Citation, RagAnswer
+  config.py                 ← RagConfig, read from environment
+  pipeline.py               ← RagPipeline: composition root wiring the stages together
 
-# 2. Create virtual environment
+  ingestion/                ← documents in, indexed chunks out
+    loader.py               ← PDF/txt/md loading + metadata (title, page, doc_type)
+    chunker.py              ← recursive word chunking
+    parent_child.py         ← small child chunks for precision, parents for context
+    embeddings.py           ← sentence-transformers embeddings
+    vector_store.py         ← FAISS dense index
+
+  retrieval/                ← ways of finding relevant chunks
+    bm25.py                 ← sparse retrieval
+    hybrid.py               ← dense + sparse reciprocal rank fusion
+    reranker.py             ← cross-encoder reranking
+    multi_query.py          ← query variants + fusion across them
+    hyde.py                 ← hypothetical document embeddings
+
+  generation/
+    generator.py            ← grounded prompt, citations, Ollama/OpenAI/extractive fallback
+
+  agents/                   ← decisions the agent makes about retrieval
+    graph.py                ← CareerResearchAgent, the LangGraph (see below)
+    router.py               ← rule-based route selection
+    grader.py               ← relevance grading + reranking of retrieved context
+    rewriter.py             ← query expansion for retry attempts
+    trace.py                ← per-node trace events
+    langsmith.py            ← LangSmith run configuration
+
+  evaluation/
+    golden_set.py           ← golden set loading + deterministic metrics
+    agent_eval.py           ← agent-level eval with route/grade/rewrite columns
+    failure_analysis.py     ← weakest-example inspection
+
+  cli.py, agent_cli.py, eval_cli.py, agent_eval_cli.py,
+  ragas_eval_cli.py, failure_cli.py     ← entry points, kept at the root so the
+                                          documented `python -m rag_studio.<name>`
+                                          commands stay stable
+
+  tests/                    ← one test module per implementation module
+```
+
+Routing, grading and rewriting live under `agents/` rather than `retrieval/` because they
+are decisions the agent makes *about* retrieval, not retrieval strategies themselves.
+
+### The agent graph
+
+`CareerResearchAgent` in `agents/graph.py` compiles this LangGraph:
+
+```
+route_query ──┬─→ direct_answer ─────────────────────────────→ END
+              │
+              └─→ retrieve_answer ─→ grade_retrieval ──┬─→ generate ─→ END
+                        ↑                              │
+                        └───────── rewrite_query ←─────┘
+                                  (bounded by max_retries)
+```
+
+- **route_query** picks the retriever and flags (parent context, multi-query, HyDE) from
+  the question shape, and may rewrite the query *before* the first retrieval for vague
+  memory/database questions.
+- **grade_retrieval** scores question↔context token overlap. Below the threshold the agent
+  rewrites the query and retries, up to `max_retries` (default 1), then answers anyway
+  with an explicit low-confidence caveat rather than silently guessing.
+- Every node appends an `AgentTraceEvent`, surfaced via `--show-trace` and used as
+  evaluation columns.
+
+## Tech stack
+
+| Layer | Technology |
+| --- | --- |
+| Document parsing | pypdf |
+| Chunking | custom recursive + parent/child |
+| Embeddings | sentence-transformers (all-MiniLM-L6-v2) |
+| Vector store | FAISS |
+| Sparse retrieval | BM25 |
+| Reranker | cross-encoder (ms-marco-MiniLM-L-6-v2) |
+| LLM | Ollama (local) / OpenAI, with extractive fallback |
+| Orchestration | LangGraph |
+| Evaluation | deterministic metrics + RAGAS |
+| Observability | local trace + LangSmith |
+| Backend / Frontend / Deployment | not yet built |
+
+## Setup
+
+```powershell
+# 1. Create and activate a virtual environment
 python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+.\venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
 
-# 3. Install dependencies
-pip install -r requirements.txt
+# 2. Install the package and extras
+pip install -e ".[dev,eval,agent]"
 
-# 4. Set up environment variables
-cp .env.example .env
-# Edit .env with your API keys
+# 3. Run the tests
+pytest backend/rag_studio/tests -q
+```
 
-# 5. Add your documents
-cp your-resume.pdf data/uploads/
-cp job-description.pdf data/uploads/
+Generation falls back to extractive answers when no LLM is configured, so the pipeline
+runs end-to-end with zero API keys. To use a local LLM, set `OLLAMA_MODEL` (and
+optionally `OLLAMA_NUM_GPU`, `OLLAMA_NUM_THREAD`, `OLLAMA_NUM_PREDICT`). To use OpenAI,
+set `OPENAI_MODEL` and `OPENAI_API_KEY`.
 
-# 6. Build the index
-cd backend/ingestion
-python embeddings.py
+Retrieval and chunking are configured from the environment via `RagConfig.from_env()` —
+`EMBEDDING_MODEL`, `RERANKER_MODEL`, `CHUNK_SIZE`, `CHUNK_OVERLAP`,
+`PARENT_CHUNK_SIZE`/`CHILD_CHUNK_SIZE` (and their overlaps), `MAX_CONTEXT_CHARS`, `TOP_K`.
 
-# 7. Start the API
-cd ../api
-uvicorn main:app --reload
+## Usage
 
-RAGAS Evaluation Results
-ConfigFaithfulnessAnswer RelevancyContext PrecisionBaseline (fixed chunks)---Recursive chunking---+ Hybrid search---+ Reranking---+ HyDE---
-(Results filled in during Week 4)
+Baseline (non-agentic) pipeline:
 
-Local RAGAS With Ollama
+```powershell
+python -m rag_studio.cli "What AI skills does my resume show?" --docs docs\Prakriti_Dhital_Resume_AI_ML.pdf
+```
 
-First generate RAGAS-compatible records from the golden set:
+Agentic pipeline, showing the route it chose and the full decision trace:
+
+```powershell
+python -m rag_studio.agent_cli "What binary F1 score was achieved in the capstone project?" `
+  --docs docs\Prakriti_Dhital_Resume_AI_ML.pdf --show-route --show-trace
+```
+
+Add `--langsmith` (requires `LANGSMITH_API_KEY`) to ship the run to LangSmith;
+`--langsmith-project` overrides the default project `career-research-rag-studio`.
+
+## Evaluation
+
+The golden set has 14 examples, including 3 **negative controls** (GPA, salary, work
+experience) whose answers are deliberately absent from the documents.
+
+Deterministic retrieval metrics — no LLM judge, fully reproducible:
+
+```powershell
+python -m rag_studio.eval_cli --output evaluation\runs\baseline.jsonl
+python -m rag_studio.agent_eval_cli --output evaluation\runs\agent_latest.jsonl
+python -m rag_studio.failure_cli --input evaluation\runs\agent_latest.jsonl
+```
+
+Latest results (n=14):
+
+| Run | Term recall | Doc title hit | Mean retrieval grade | Rewrite rate |
+| --- | --- | --- | --- | --- |
+| Baseline pipeline (`all_resumes_baseline`) | 1.000 | 1.000 | — | — |
+| LangGraph agent (`agent_latest`) | 1.000 | 1.000 | 0.617 | 0.071 |
+
+Term recall and document-title hit are saturated at 1.000 on this golden set, so they no
+longer discriminate between configurations — the mean retrieval grade (range 0.250–0.857)
+is the metric with headroom. Exactly one example (`tutoring_memory`) triggered a rewrite
+and retry. Both facts are the main argument for a harder golden set before tuning further.
+
+### RAGAS with a local Ollama judge
+
+First generate RAGAS-compatible records from the golden set, then run **one metric at a
+time** — local judging is slow, so start with `--limit 1`:
 
 ```powershell
 $env:OLLAMA_MODEL="llama3"
 $env:HF_HUB_OFFLINE="1"
 $env:TRANSFORMERS_OFFLINE="1"
 python -m rag_studio.eval_cli --output evaluation\runs\all_resumes_baseline.jsonl
+python -m rag_studio.ragas_eval_cli --input evaluation\runs\all_resumes_baseline.jsonl `
+  --output evaluation\runs\ragas_ollama_context_recall_limit1.jsonl `
+  --limit 1 --judge-model llama3 --num-thread 4 --metrics context_recall
 ```
 
-Then run one RAGAS metric at a time with Ollama. Local judging is slow, so start with
-`--limit 1`:
-
-```powershell
-python -m rag_studio.ragas_eval_cli --input evaluation\runs\all_resumes_baseline.jsonl --output evaluation\runs\ragas_ollama_context_recall_limit1.jsonl --limit 1 --judge-model llama3 --num-thread 4 --metrics context_recall
-```
-
-Supported metrics are `faithfulness`, `answer_relevancy`, `context_precision`, and
+Supported metrics: `faithfulness`, `answer_relevancy`, `context_precision`,
 `context_recall`.
 
-Key Learning Outcomes
+**RAGAS results so far are incomplete.** Only `context_recall` has produced a value:
 
-End-to-end RAG pipeline design
-Chunking strategy tradeoffs
-Dense vs sparse retrieval
-Cross-encoder reranking
-RAGAS evaluation framework
-Agentic query routing with LangGraph
-Production deployment with Docker + Cloud Run
+| Metric | Value | n |
+| --- | --- | --- |
+| context_recall | 1.00 | 1 |
+| faithfulness | not obtained (null) | 1 |
+| answer_relevancy | not obtained (null) | 1 |
+| context_precision | not obtained (null) | 1 |
+
+The three null metrics returned `None` from the local llama3 judge rather than a score,
+and the graded runs were made against *extractive* answers (no LLM was configured at the
+time), which is not a fair target for faithfulness or answer relevancy. Getting real
+numbers here requires re-running with an LLM-backed generator and a judge that reliably
+returns parseable output — that is the open evaluation thread.
+
+## Key learning outcomes
+
+- End-to-end RAG pipeline design
+- Chunking strategy tradeoffs (fixed vs recursive vs parent/child)
+- Dense vs sparse retrieval, and fusion of both
+- Cross-encoder reranking
+- Deterministic evaluation, negative controls, and metric saturation
+- Agentic query routing, retrieval grading, and self-correcting retry loops
+- Production deployment with Docker + Cloud Run (pending)
