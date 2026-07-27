@@ -5,7 +5,7 @@ import os
 import urllib.error
 import urllib.request
 
-from rag_studio.llm import gemini_is_configured, generate_with_gemini
+from rag_studio.llm import OLLAMA, complete, resolve_provider
 
 
 HYDE_PROMPT = (
@@ -24,22 +24,20 @@ class HydeGenerator:
         template rather than raising: HyDE only shapes the retrieval query, so a
         weaker hypothesis costs some recall but still returns usable results.
         """
-        if gemini_is_configured():
-            try:
-                return generate_with_gemini(
-                    HYDE_PROMPT.format(question=question),
-                    temperature=0.3,
-                )
-            except RuntimeError:
-                return _generate_deterministic_hypothesis(question)
+        config = resolve_provider()
+        if not config.is_llm:
+            return _generate_deterministic_hypothesis(question)
 
-        ollama_model = os.getenv("OLLAMA_MODEL")
-        if ollama_model:
-            try:
-                return _generate_with_ollama(question, ollama_model)
-            except RuntimeError:
-                pass
-        return _generate_deterministic_hypothesis(question)
+        try:
+            if config.provider == OLLAMA:
+                return _generate_with_ollama(question, config.model or "llama3")
+            return complete(
+                HYDE_PROMPT.format(question=question),
+                temperature=0.3,
+                config=config,
+            )
+        except RuntimeError:
+            return _generate_deterministic_hypothesis(question)
 
 
 def _generate_with_ollama(question: str, model: str) -> str:

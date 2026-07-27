@@ -5,7 +5,7 @@ import os
 import urllib.error
 import urllib.request
 
-from rag_studio.llm import gemini_is_configured, generate_with_gemini
+from rag_studio.llm import OLLAMA, complete, resolve_provider
 from rag_studio.schema import Citation, RetrievedChunk
 
 
@@ -22,7 +22,7 @@ class AnswerGenerator:
         self.max_context_chars = max_context_chars
 
     def generate(self, question: str, contexts: list[RetrievedChunk]) -> str:
-        """Answer the question, preferring Gemini, then OpenAI, then Ollama.
+        """Answer the question using the configured provider.
 
         Falls back to an extractive answer only when no provider is configured at
         all. A configured provider that fails raises instead of falling back, so a
@@ -30,24 +30,28 @@ class AnswerGenerator:
         extractive text dumps.
         """
         contexts = trim_contexts(contexts, self.max_context_chars)
+        config = resolve_provider()
 
-        if gemini_is_configured():
-            return _generate_with_gemini(question, contexts)
+        if not config.is_llm:
+            return _generate_extractive_answer(question, contexts)
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        openai_model = os.getenv("OPENAI_MODEL")
-        if api_key and openai_model:
-            return _generate_with_openai(question, contexts, openai_model)
-
-        ollama_model = os.getenv("OLLAMA_MODEL")
-        if ollama_model:
+        if config.provider == OLLAMA:
             try:
-                return _generate_with_ollama(question, contexts, ollama_model)
+                return _generate_with_ollama(
+                    question,
+                    contexts,
+                    config.model or "llama3",
+                )
             except RuntimeError as exc:
                 fallback = _generate_extractive_answer(question, contexts)
                 return f"Ollama generation failed: {exc}\n\n{fallback}"
 
-        return _generate_extractive_answer(question, contexts)
+        return complete(
+            _build_grounded_prompt(question, contexts),
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.0,
+            config=config,
+        )
 
 
 def build_citations(contexts: list[RetrievedChunk]) -> list[Citation]:
@@ -68,37 +72,6 @@ def build_citations(contexts: list[RetrievedChunk]) -> list[Citation]:
             )
         )
     return citations
-
-
-def _generate_with_gemini(question: str, contexts: list[RetrievedChunk]) -> str:
-    return generate_with_gemini(
-        _build_grounded_prompt(question, contexts),
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.0,
-    )
-
-
-def _generate_with_openai(question: str, contexts: list[RetrievedChunk], model: str) -> str:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("Install openai to use LLM generation: pip install openai") from exc
-
-    client = OpenAI()
-    response = client.responses.create(
-        model=model,
-        input=[
-            {
-                "role": "system",
-                "content": SYSTEM_INSTRUCTION,
-            },
-            {
-                "role": "user",
-                "content": _build_grounded_prompt(question, contexts),
-            },
-        ],
-    )
-    return response.output_text.strip()
 
 
 def _generate_with_ollama(question: str, contexts: list[RetrievedChunk], model: str) -> str:

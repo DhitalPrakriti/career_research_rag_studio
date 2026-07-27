@@ -23,8 +23,14 @@ def one_context() -> list[RetrievedChunk]:
 @pytest.fixture(autouse=True)
 def clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
+        "LLM_PROVIDER",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
+        "GEMINI_MODEL",
+        "LITELLM_API_KEY",
+        "LITELLM_MASTER_KEY",
+        "LITELLM_MODEL",
+        "LITELLM_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
         "OLLAMA_MODEL",
@@ -98,45 +104,69 @@ def test_ollama_options_rejects_non_integer_values(
         _ollama_options()
 
 
+@pytest.fixture
+def captured_completion(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def fake_complete(
+        prompt: str,
+        system_instruction: str | None = None,
+        config: object = None,
+        **kwargs: object,
+    ) -> str:
+        captured["prompt"] = prompt
+        captured["system_instruction"] = system_instruction
+        captured["config"] = config
+        return "94.28% Binary F1 [1]."
+
+    monkeypatch.setattr(generator_module, "complete", fake_complete)
+    return captured
+
+
 def test_gemini_is_used_when_a_key_is_present(
     monkeypatch: pytest.MonkeyPatch,
     one_context: list[RetrievedChunk],
+    captured_completion: dict[str, object],
 ) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    captured: dict[str, object] = {}
-
-    def fake_generate(prompt: str, system_instruction: str | None = None, **kwargs: object) -> str:
-        captured["prompt"] = prompt
-        captured["system_instruction"] = system_instruction
-        return "94.28% Binary F1 [1]."
-
-    monkeypatch.setattr(generator_module, "generate_with_gemini", fake_generate)
 
     answer = AnswerGenerator().generate("What binary F1 score was achieved?", one_context)
 
     assert answer == "94.28% Binary F1 [1]."
-    assert "Achieved 94.28% Binary F1." in str(captured["prompt"])
-    assert "cite claims inline" in str(captured["system_instruction"])
+    assert "Achieved 94.28% Binary F1." in str(captured_completion["prompt"])
+    assert "cite claims inline" in str(captured_completion["system_instruction"])
+    assert getattr(captured_completion["config"], "provider") == "gemini"
 
 
-def test_gemini_takes_precedence_over_openai_and_ollama(
+def test_litellm_is_preferred_when_both_are_configured(
     monkeypatch: pytest.MonkeyPatch,
     one_context: list[RetrievedChunk],
+    captured_completion: dict[str, object],
 ) -> None:
+    """Auto-detection favours the proxy, so its budget caps stay in the path."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
-    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
-    monkeypatch.setattr(
-        generator_module,
-        "generate_with_gemini",
-        lambda *args, **kwargs: "from gemini",
-    )
+    monkeypatch.setenv("LITELLM_API_KEY", "proxy-key")
 
-    assert AnswerGenerator().generate("Question?", one_context) == "from gemini"
+    AnswerGenerator().generate("Question?", one_context)
+
+    assert getattr(captured_completion["config"], "provider") == "litellm"
 
 
-def test_configured_gemini_failure_raises_instead_of_falling_back(
+def test_explicit_provider_overrides_auto_detection(
+    monkeypatch: pytest.MonkeyPatch,
+    one_context: list[RetrievedChunk],
+    captured_completion: dict[str, object],
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("LITELLM_API_KEY", "proxy-key")
+
+    AnswerGenerator().generate("Question?", one_context)
+
+    assert getattr(captured_completion["config"], "provider") == "gemini"
+
+
+def test_configured_provider_failure_raises_instead_of_falling_back(
     monkeypatch: pytest.MonkeyPatch,
     one_context: list[RetrievedChunk],
 ) -> None:
@@ -146,7 +176,7 @@ def test_configured_gemini_failure_raises_instead_of_falling_back(
     def fail(*args: object, **kwargs: object) -> str:
         raise RuntimeError("Gemini request failed for model gemini-3.6-flash: 401")
 
-    monkeypatch.setattr(generator_module, "generate_with_gemini", fail)
+    monkeypatch.setattr(generator_module, "complete", fail)
 
     with pytest.raises(RuntimeError, match="Gemini request failed"):
         AnswerGenerator().generate("Question?", one_context)

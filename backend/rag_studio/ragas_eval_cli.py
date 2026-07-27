@@ -7,7 +7,15 @@ from typing import Any
 
 import numpy as np
 
-from rag_studio.llm import DEFAULT_GEMINI_MODEL, gemini_api_key, gemini_model_name
+from rag_studio.evaluation.golden_set import is_negative_control
+from rag_studio.llm import (
+    DEFAULT_GEMINI_MODEL,
+    gemini_api_key,
+    gemini_model_name,
+    litellm_api_key,
+    litellm_base_url,
+    litellm_model_name,
+)
 
 
 class SentenceTransformerLangchainEmbeddings:
@@ -61,9 +69,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--judge-provider",
-        choices=["gemini", "ollama"],
+        choices=["gemini", "litellm", "ollama"],
         default="gemini",
-        help="Which judge to use. Gemini is an API call; Ollama needs a local server.",
+        help=(
+            "Which judge to use. gemini and litellm are API calls; ollama needs a local "
+            "server. Use litellm to keep the proxy's budget caps and caching."
+        ),
     )
     parser.add_argument(
         "--judge-model",
@@ -144,12 +155,14 @@ def main() -> None:
         judge_model = args.judge_model
     elif args.judge_provider == "gemini":
         judge_model = gemini_model_name()
+    elif args.judge_provider == "litellm":
+        judge_model = litellm_model_name()
     else:
         judge_model = "llama3"
 
     max_workers = args.max_workers
     if max_workers is None:
-        max_workers = 4 if args.judge_provider == "gemini" else 1
+        max_workers = 1 if args.judge_provider == "ollama" else 4
 
     print(f"Judge: {args.judge_provider} / {judge_model} (max_workers={max_workers})")
 
@@ -194,6 +207,26 @@ def _build_judge_llm(
             model=judge_model,
             temperature=0,
             google_api_key=api_key,
+        )
+
+    if provider == "litellm":
+        api_key = litellm_api_key()
+        if not api_key:
+            raise SystemExit(
+                "No LiteLLM key found. Set LITELLM_API_KEY (or LITELLM_MASTER_KEY) before "
+                "judging with --judge-provider litellm."
+            )
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError as exc:
+            raise SystemExit(
+                "Install the OpenAI-compatible judge dependency: pip install langchain-openai"
+            ) from exc
+        return ChatOpenAI(
+            model=judge_model,
+            temperature=0,
+            api_key=api_key,
+            base_url=litellm_base_url(),
         )
 
     from langchain_ollama import ChatOllama
@@ -298,18 +331,40 @@ def _print_summary(records: list[dict[str, Any]], output: str) -> None:
         "llm_context_precision_with_reference",
         "context_recall",
     ]
+
+    def values_for(rows: list[dict[str, Any]], metric: str) -> list[float]:
+        return [
+            float(row[metric])
+            for row in rows
+            if metric in row and row[metric] is not None and not np.isnan(float(row[metric]))
+        ]
+
+    answerable = [r for r in records if not is_negative_control(str(r.get("reference", "")))]
+    negatives = [r for r in records if is_negative_control(str(r.get("reference", "")))]
+
     print(f"Examples: {len(records)}")
     print(f"Output: {output}")
     for metric in metric_names:
-        values = [
-            float(record[metric])
-            for record in records
-            if metric in record and record[metric] is not None and not np.isnan(float(record[metric]))
-        ]
-        if values:
-            print(f"Average {metric}: {sum(values) / len(values):.3f}")
-        else:
-            print(f"Average {metric}: n/a")
+        overall = values_for(records, metric)
+        if not overall:
+            continue
+        line = f"Average {metric}: {sum(overall) / len(overall):.3f}"
+        # answer_relevancy floors any "not in the sources" answer to 0 as noncommittal,
+        # so on negative controls it penalises exactly the behaviour we want. Report the
+        # answerable-only figure beside it rather than letting the blended number stand.
+        if metric == "answer_relevancy" and negatives:
+            subset = values_for(answerable, metric)
+            if subset:
+                print(f"{line}   [answerable only: {sum(subset) / len(subset):.3f}]")
+                continue
+        print(line)
+
+    if negatives:
+        print(
+            f"\nNote: {len(negatives)} negative controls are included above. RAGAS scores a "
+            "correct refusal as 0.0 answer_relevancy, so use the answerable-only figure to "
+            "judge answer quality and refusal_accuracy from the eval CLIs to judge refusals."
+        )
 
 
 def _build_metrics(

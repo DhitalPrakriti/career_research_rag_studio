@@ -35,12 +35,16 @@ def main() -> None:
     save_jsonl(records, args.output)
     summary = summarize_agent_records(records)
 
-    print(f"Examples: {len(records)}")
+    answerable = int(summary["answerable_count"])
+    negatives = int(summary["negative_control_count"])
+
+    print(f"Examples: {len(records)}  ({answerable} answerable, {negatives} negative controls)")
     print(f"Output: {args.output}")
-    print(f"Average term recall: {summary['term_recall']:.3f}")
-    print(f"Average doc title hit: {summary['doc_title_hit']:.3f}")
-    print(f"Rewrite rate: {summary['rewrite_rate']:.3f}")
-    print(f"Average retrieval grade: {summary['average_retrieval_grade']:.3f}")
+    print(f"Answerable term recall:   {summary['answerable_term_recall']:.3f}  (n={answerable})")
+    print(f"Answerable doc title hit: {summary['answerable_doc_title_hit']:.3f}  (n={answerable})")
+    print(f"Refusal accuracy:         {summary['refusal_accuracy']:.3f}  (n={negatives})")
+    print(f"Rewrite rate:             {summary['rewrite_rate']:.3f}")
+    print(f"Average retrieval grade:  {summary['average_retrieval_grade']:.3f}")
 
 
 if __name__ == "__main__":
