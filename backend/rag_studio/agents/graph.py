@@ -171,7 +171,11 @@ class CareerResearchAgent:
             multi_query=decision.multi_query,
             hyde=decision.hyde,
         )
-        if decision.rewrite_before_retrieval:
+        # Reorder by relevance whenever the query was rewritten, either pre-emptively by
+        # the router or by a retry. A rewritten query carries expansion terms, which pull
+        # in loosely related chunks, so the ranking matters more than on a first pass.
+        reranked = decision.rewrite_before_retrieval or state.get("retry_count", 0) > 0
+        if reranked:
             contexts = self.retrieval_grader.rank(
                 state.get("retrieval_question", state["question"]),
                 contexts,
@@ -184,6 +188,7 @@ class CareerResearchAgent:
                 "Retrieved context chunks.",
                 retrieval_question=state.get("retrieval_question", state["question"]),
                 chunks=len(contexts),
+                reranked=reranked,
             ),
         }
 

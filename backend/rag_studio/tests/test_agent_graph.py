@@ -125,24 +125,33 @@ def test_agent_graph_refuses_to_generate_when_retrieval_is_not_relevant() -> Non
     assert "does not look relevant enough" in result.answer
 
 
-def test_agent_graph_rewrites_vague_memory_database_query_before_retrieval() -> None:
+def test_agent_graph_retrieves_with_the_original_question_first() -> None:
+    """No pre-emptive rewrite any more.
+
+    The router used to expand a query before the first retrieval when it matched
+    "database" AND "memory" — a rule that existed for one golden example. The
+    grade-then-rewrite loop covers weak retrieval generally, so the first attempt now
+    always uses the question as asked.
+    """
     pipeline = FakePipeline()
-    agent = CareerResearchAgent(pipeline=pipeline, router=QueryRouter())  # type: ignore[arg-type]
+    agent = CareerResearchAgent(pipeline=pipeline, router=QueryRouter(mode="rules"))  # type: ignore[arg-type]
 
-    result = agent.answer("What database was used for memory?", top_k=2)
+    agent.answer("What database was used for memory?", top_k=2)
 
-    assert result.answer == "generated answer"
-    assert len(pipeline.retrieval_questions) == 1
-    assert "Related terms:" in pipeline.retrieval_questions[0]
-    assert pipeline.answer_kwargs["parent_context"] is False
+    assert pipeline.retrieval_questions[0] == "What database was used for memory?"
+    assert "Related terms:" not in pipeline.retrieval_questions[0]
 
 
-def test_agent_graph_prioritizes_rewritten_query_contexts() -> None:
+def test_agent_graph_reranks_contexts_after_a_rewrite() -> None:
+    """A rewritten query carries expansion terms, so ranking matters on the retry."""
     pipeline = FakePipeline()
-    agent = CareerResearchAgent(pipeline=pipeline, router=QueryRouter())  # type: ignore[arg-type]
+    agent = CareerResearchAgent(pipeline=pipeline, router=QueryRouter(mode="rules"))  # type: ignore[arg-type]
 
-    state = agent.run("What database was used for memory?", top_k=2)
+    state = agent.run("What API was used for memory?", top_k=2)
 
+    assert state["retry_count"] == 1
+    # The Firestore chunk answers the rewritten query better than the FAISS/MongoDB one,
+    # and reranking moves it first.
     assert "Firestore" in state["contexts"][0].chunk.text
 
 

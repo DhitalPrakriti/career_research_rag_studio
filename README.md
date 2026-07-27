@@ -69,7 +69,7 @@ backend/rag_studio/
 
   agents/                   ← decisions the agent makes about retrieval
     graph.py                ← CareerResearchAgent, the LangGraph (see below)
-    router.py               ← rule-based route selection
+    router.py               ← LLM route classification, with rule fallback
     grader.py               ← relevance grading + reranking of retrieved context
     rewriter.py             ← query expansion for retry attempts
     trace.py                ← per-node trace events
@@ -114,14 +114,58 @@ route_query ──┬─→ direct_answer ────────────�
                                   (bounded by max_retries)
 ```
 
-- **route_query** picks the retriever and flags (parent context, multi-query, HyDE) from
-  the question shape, and may rewrite the query *before* the first retrieval for vague
-  memory/database questions.
+- **route_query** classifies the question into one of four categories and maps that to
+  retrieval settings. See below.
 - **grade_retrieval** scores question↔context token overlap. Below the threshold the agent
   rewrites the query and retries, up to `max_retries` (default 1), then answers anyway
   with an explicit low-confidence caveat rather than silently guessing.
 - Every node appends an `AgentTraceEvent`, surfaced via `--show-trace` and used as
   evaluation columns.
+
+### Routing
+
+One question, four categories, and a single mapping from category to retrieval settings so
+the two classifiers cannot disagree about what a category means:
+
+| Category | Retrieval |
+| --- | --- |
+| `direct_answer` | none — greeting or a question about the assistant |
+| `exact_fact` | child chunks, no expansion: precision over recall |
+| `broad_comparison` | parent context + multi-query + HyDE: maximum recall |
+| `balanced` | parent context + multi-query |
+
+`ROUTER_MODE` selects the classifier: `llm`, `rules`, or `auto` (LLM when a provider is
+configured, else rules). A failed LLM call logs a warning and falls back to the rules — a
+wrong route only costs some retrieval quality, so it is not worth failing a query over,
+unlike a generation failure. Every decision carries `decided_by`, so the trace and the UI
+always show which classifier actually ran.
+
+**The rules key on question form, never on corpus vocabulary.** They previously matched
+literals lifted straight from the golden set — `"binary f1"`, `"macro f1"`, `"score did"`,
+`"what database"` — which is tuning the router on the test set. It scored well on those 14
+sentences and generalised to nothing: "What binary F1 score was achieved?" took the
+precision route while "How accurate was the model?" fell through to the default. A test now
+greps the module for those literals so the shortcut cannot come back.
+
+The same cleanup fixed a worse bug. `direct` means *skip retrieval entirely*, and the old
+rule matched the bare word "help" anywhere in a question, so "Which resume would help me
+for an AI engineering role?" and "Can you help me tailor my resume?" — core use cases —
+were answered with boilerplate and no retrieval at all. Greeting matching is now anchored
+to the whole question.
+
+Both classifiers were checked against that failure mode, because the LLM reproduced it
+independently: with a loose prompt it read "Can you help me tailor my resume?" as a question
+about the assistant. The prompt now states that politeness phrasing does not make a request
+meta, with examples.
+
+Replacing the overfitted rules changed no measured outcome — answerable term recall 1.000,
+doc-title hit 1.000, refusal accuracy 1.000, mean grade 0.617 across the overfitted rules,
+the general rules and the LLM classifier alike — and the rewrite rate fell from 0.071 to
+0.000, so the special case it existed for was not needed. The LLM classifier does make
+better-reasoned choices that the current golden set cannot reward: it treats "What is
+Prakriti's GPA?" as a single-value question and takes the precision route, where the rules
+fall back to balanced. That the numbers cannot tell these three apart is itself the
+argument for a harder golden set.
 
 ## Tech stack
 
