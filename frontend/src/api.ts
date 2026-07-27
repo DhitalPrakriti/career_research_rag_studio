@@ -92,8 +92,31 @@ export interface HealthResponse {
   status: string;
   provider: string;
   is_generated: boolean;
-  documents: { title: string; pages: number | null }[];
+  documents: { title: string; pages: number | null; chunks: number }[];
   chunks: number;
+  writes_enabled: boolean;
+}
+
+export interface StoredDocument {
+  name: string;
+  size_bytes: number;
+  modified: string;
+  chunks: number;
+}
+
+export interface DocumentsResponse {
+  documents: StoredDocument[];
+  chunks: number;
+  writes_enabled: boolean;
+  allowed_types: string[];
+  max_upload_bytes: number;
+}
+
+export interface ReindexResponse {
+  documents: StoredDocument[];
+  chunks: number;
+  elapsed_ms: number;
+  message: string;
 }
 
 async function readError(response: Response): Promise<string> {
@@ -125,6 +148,35 @@ export async function askQuestion(
   });
   if (!response.ok) throw new Error(await readError(response));
   return (await response.json()) as QueryResponse;
+}
+
+export async function fetchDocuments(): Promise<DocumentsResponse> {
+  const response = await fetch("/api/documents");
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as DocumentsResponse;
+}
+
+export async function uploadDocuments(files: FileList | File[]): Promise<ReindexResponse> {
+  const body = new FormData();
+  for (const file of Array.from(files)) body.append("files", file);
+
+  const response = await fetch("/api/documents", { method: "POST", body });
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as ReindexResponse;
+}
+
+export async function reindexDocuments(): Promise<ReindexResponse> {
+  const response = await fetch("/api/documents/reindex", { method: "POST" });
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as ReindexResponse;
+}
+
+export async function deleteDocument(name: string): Promise<ReindexResponse> {
+  const response = await fetch(`/api/documents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return (await response.json()) as ReindexResponse;
 }
 
 export async function tailorResume(

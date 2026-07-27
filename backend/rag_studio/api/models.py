@@ -119,6 +119,34 @@ class TailorResponse(BaseModel):
 class DocumentOut(BaseModel):
     title: str
     pages: int | None = None
+    chunks: int = 0
+
+
+class StoredDocumentOut(BaseModel):
+    name: str
+    size_bytes: int
+    modified: str
+    chunks: int = 0
+
+
+class DocumentsResponse(BaseModel):
+    documents: list[StoredDocumentOut]
+    chunks: int
+    writes_enabled: bool = Field(
+        description=(
+            "False when ALLOW_DOCUMENT_WRITES is off. These endpoints have no auth, so a "
+            "public deployment should disable them."
+        )
+    )
+    allowed_types: list[str]
+    max_upload_bytes: int
+
+
+class ReindexResponse(BaseModel):
+    documents: list[StoredDocumentOut]
+    chunks: int
+    elapsed_ms: int
+    message: str
 
 
 class HealthResponse(BaseModel):
@@ -127,3 +155,4 @@ class HealthResponse(BaseModel):
     is_generated: bool
     documents: list[DocumentOut]
     chunks: int
+    writes_enabled: bool = True

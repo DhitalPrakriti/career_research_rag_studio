@@ -8,27 +8,41 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from rag_studio.agents import CareerResearchAgent
+from rag_studio.api.documents import (
+    ALLOWED_SUFFIXES,
+    MAX_UPLOAD_BYTES,
+    DocumentError,
+    delete_document,
+    list_documents,
+    save_document,
+    writes_enabled,
+)
 from rag_studio.api.models import (
     BulletOut,
     CitationOut,
     ContextOut,
     DocumentOut,
+    DocumentsResponse,
     GradeOut,
     HealthResponse,
     QueryRequest,
     QueryResponse,
+    ReindexResponse,
     RequirementOut,
     RouteOut,
+    StoredDocumentOut,
     TailorRequest,
     TailorResponse,
     TraceEventOut,
@@ -44,61 +58,72 @@ EXTRACTIVE_MARKER = "No LLM model is configured"
 
 
 class AgentService:
-    """Holds the one ingested agent shared by all requests."""
+    """Holds the one ingested agent shared by all requests, and rebuilds it on demand."""
 
-    def __init__(self) -> None:
+    def __init__(self, docs_dir: Path) -> None:
+        self.docs_dir = docs_dir
         self.agent: CareerResearchAgent | None = None
         self.tailor: ResumeTailor | None = None
         self.documents: list[DocumentOut] = []
         self.chunks = 0
+        # Reindexing replaces the agent while other requests may be reading it. The lock
+        # serialises rebuilds, and the references are swapped in one step at the end so no
+        # request ever sees a half-built index.
+        self._lock = threading.Lock()
 
-    def load(self, docs_dir: Path) -> None:
+    def load(self, docs_dir: Path | None = None) -> None:
+        directory = docs_dir or self.docs_dir
         paths = sorted(
             path
-            for path in docs_dir.glob("*")
-            if path.suffix.lower() in {".pdf", ".txt", ".md"}
+            for path in directory.glob("*")
+            if path.suffix.lower() in ALLOWED_SUFFIXES
         )
         if not paths:
-            logger.warning("No documents found in %s; queries will return no context.", docs_dir)
+            logger.warning("No documents found in %s; queries will return no context.", directory)
+            with self._lock:
+                self.agent = None
+                self.tailor = None
+                self.documents = []
+                self.chunks = 0
             return
 
-        logger.info("Ingesting %d document(s) from %s", len(paths), docs_dir)
+        logger.info("Ingesting %d document(s) from %s", len(paths), directory)
         started = time.perf_counter()
         agent = CareerResearchAgent()
         agent.ingest(list(paths))
 
-        self.agent = agent
-        # Shares the one ingested pipeline; tailoring needs the same index.
-        self.tailor = ResumeTailor(pipeline=agent.pipeline)
-        self.chunks = len(agent.pipeline.chunks)
-        self.documents = [DocumentOut(title=path.name) for path in paths]
-        logger.info(
-            "Ingested %d chunks in %.1fs",
-            self.chunks,
-            time.perf_counter() - started,
-        )
+        chunks = agent.pipeline.chunks
+        per_document = Counter(str(chunk.metadata.get("title") or "") for chunk in chunks)
+
+        with self._lock:
+            self.agent = agent
+            # Shares the one ingested pipeline; tailoring needs the same index.
+            self.tailor = ResumeTailor(pipeline=agent.pipeline)
+            self.chunks = len(chunks)
+            self.documents = [
+                DocumentOut(title=path.name, chunks=per_document.get(path.name, 0))
+                for path in paths
+            ]
+        logger.info("Ingested %d chunks in %.1fs", self.chunks, time.perf_counter() - started)
+
+    def reload(self) -> None:
+        self.load(self.docs_dir)
 
     def require_agent(self) -> CareerResearchAgent:
         if self.agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"No documents are loaded. Put PDFs in {DEFAULT_DOCS_DIR}/ "
-                    "(or set RAG_DOCS_DIR) and restart."
-                ),
-            )
+            raise HTTPException(status_code=503, detail=self._no_documents_message())
         return self.agent
 
     def require_tailor(self) -> ResumeTailor:
         if self.tailor is None:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"No documents are loaded. Put your resume PDFs in {DEFAULT_DOCS_DIR}/ "
-                    "(or set RAG_DOCS_DIR) and restart."
-                ),
-            )
+            raise HTTPException(status_code=503, detail=self._no_documents_message())
         return self.tailor
+
+    def _no_documents_message(self) -> str:
+        return (
+            f"No documents are loaded. Upload a resume, or put PDFs in {self.docs_dir}/ "
+            "and reindex."
+        )
 
 
 def _provider_description() -> tuple[str, bool]:
@@ -118,8 +143,8 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
     else:
         load_dotenv()
 
-    service = AgentService()
     resolved_docs = Path(docs_dir or os.getenv("RAG_DOCS_DIR") or DEFAULT_DOCS_DIR)
+    service = AgentService(resolved_docs)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -152,6 +177,102 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
             is_generated=is_generated,
             documents=service.documents,
             chunks=service.chunks,
+            writes_enabled=writes_enabled(),
+        )
+
+    def _documents_payload() -> DocumentsResponse:
+        indexed = {document.title: document.chunks for document in service.documents}
+        return DocumentsResponse(
+            documents=[
+                StoredDocumentOut(
+                    name=stored.name,
+                    size_bytes=stored.size_bytes,
+                    modified=stored.modified,
+                    chunks=indexed.get(stored.name, 0),
+                )
+                for stored in list_documents(service.docs_dir)
+            ],
+            chunks=service.chunks,
+            writes_enabled=writes_enabled(),
+            allowed_types=sorted(ALLOWED_SUFFIXES),
+            max_upload_bytes=MAX_UPLOAD_BYTES,
+        )
+
+    def _require_writes() -> None:
+        if not writes_enabled():
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Document changes are disabled. Unset ALLOW_DOCUMENT_WRITES to enable "
+                    "them, and only do that where the API is not publicly reachable."
+                ),
+            )
+
+    @app.get("/api/documents", response_model=DocumentsResponse)
+    def get_documents() -> DocumentsResponse:
+        """What is on disk, and how many chunks of each are actually indexed.
+
+        A file present with 0 chunks means it was added but not reindexed yet, which is the
+        confusion this whole endpoint exists to remove.
+        """
+        return _documents_payload()
+
+    @app.post("/api/documents", response_model=ReindexResponse)
+    def upload_documents(files: list[UploadFile] = File(...)) -> ReindexResponse:
+        _require_writes()
+        if not files:
+            raise HTTPException(status_code=400, detail="No files were uploaded.")
+
+        started = time.perf_counter()
+        saved: list[str] = []
+        for upload in files:
+            try:
+                payload = upload.file.read()
+                stored = save_document(service.docs_dir, upload.filename or "", payload)
+            except DocumentError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            finally:
+                upload.file.close()
+            saved.append(stored.name)
+
+        service.reload()
+        payload_out = _documents_payload()
+        return ReindexResponse(
+            documents=payload_out.documents,
+            chunks=payload_out.chunks,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            message=f"Indexed {', '.join(saved)}.",
+        )
+
+    @app.post("/api/documents/reindex", response_model=ReindexResponse)
+    def reindex_documents() -> ReindexResponse:
+        _require_writes()
+        started = time.perf_counter()
+        service.reload()
+        payload_out = _documents_payload()
+        return ReindexResponse(
+            documents=payload_out.documents,
+            chunks=payload_out.chunks,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            message=f"Reindexed {len(payload_out.documents)} document(s).",
+        )
+
+    @app.delete("/api/documents/{name}", response_model=ReindexResponse)
+    def remove_document(name: str) -> ReindexResponse:
+        _require_writes()
+        started = time.perf_counter()
+        try:
+            delete_document(service.docs_dir, name)
+        except DocumentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        service.reload()
+        payload_out = _documents_payload()
+        return ReindexResponse(
+            documents=payload_out.documents,
+            chunks=payload_out.chunks,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            message=f"Removed {name}.",
         )
 
     @app.post("/api/query", response_model=QueryResponse)

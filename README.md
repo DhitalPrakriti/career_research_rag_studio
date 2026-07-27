@@ -297,10 +297,39 @@ behind a disclosure so a citation can be checked against the exact text the mode
 a negative-control question such as "What is my GPA?" to watch the rewrite-and-retry path
 fire and the agent decline to answer.
 
-Endpoints: `GET /api/health`, `POST /api/tailor`, `POST /api/query`, and OpenAPI docs
-at `/docs`.
+Endpoints: `GET /api/health`, `POST /api/tailor`, `POST /api/query`, the document
+endpoints below, and OpenAPI docs at `/docs`.
 
-The UI has two modes: **Tailor to a job** (paste a posting) and **Ask a question**.
+The UI has three modes: **Tailor to a job** (paste a posting), **Ask a question**, and
+**My documents**.
+
+### Keeping your documents current
+
+Ingestion runs at startup because building the index takes seconds while a query takes
+milliseconds. That is right for serving and wrong for a tool whose premise is that you keep
+editing your resume, so documents can be managed at runtime instead of needing a restart:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/documents` | What is on disk, with the number of indexed chunks per file |
+| `POST /api/documents` | Upload one or more files, then reindex automatically |
+| `POST /api/documents/reindex` | Rebuild the index from whatever is on disk |
+| `DELETE /api/documents/{name}` | Remove a file, then reindex |
+
+Uploading a file with an existing name **replaces** it, because replacing a resume with its
+newer version is the main thing this is for — accumulating "resume (1).pdf" variants that
+all get indexed would quietly corrupt the evidence. The listing shows chunks per document,
+so a file sitting at 0 chunks is visibly on disk but not yet indexed.
+
+Reindexing swaps the agent and the index in one step behind a lock, so a concurrent request
+never sees a half-built index.
+
+**These endpoints have no authentication.** Uploads are restricted to `.pdf`, `.txt` and
+`.md`, capped at 10 MB, and filenames are reduced to a bare validated name so a path like
+`../../.env` cannot escape the documents directory — but anyone who can reach the API can
+still add or delete documents. Set `ALLOW_DOCUMENT_WRITES=false` for any deployment that is
+publicly reachable, or put auth in front of it. The health and documents responses both
+report `writes_enabled` so the UI hides the controls when it is off.
 
 Documents are ingested once at startup from `docs/` (override with `RAG_DOCS_DIR`), because
 ingestion builds an embedding index in seconds while a query takes milliseconds.

@@ -8,13 +8,14 @@ import {
   type TailorResponse,
 } from "./api";
 import { Badge } from "./components/Badge";
+import { DocumentsPanel } from "./components/DocumentsPanel";
 import { RouteCard } from "./components/RouteCard";
 import { SourceList } from "./components/SourceList";
 import { StatRow } from "./components/StatRow";
 import { TailorResult } from "./components/TailorResult";
 import { TraceTimeline } from "./components/TraceTimeline";
 
-type Mode = "tailor" | "ask";
+type Mode = "tailor" | "ask" | "documents";
 
 const EXAMPLE_QUESTIONS = [
   "What binary F1 score was achieved in the capstone project?",
@@ -47,11 +48,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const pending = useRef<AbortController | null>(null);
 
-  useEffect(() => {
+  const refreshHealth = useCallback(() => {
     fetchHealth()
       .then(setHealth)
       .catch(() => setHealth(null));
   }, []);
+
+  useEffect(refreshHealth, [refreshHealth]);
 
   useEffect(() => () => pending.current?.abort(), []);
 
@@ -137,16 +140,26 @@ export default function App() {
         >
           Ask a question
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "documents"}
+          className={mode === "documents" ? "tab is-active" : "tab"}
+          onClick={() => switchMode("documents")}
+        >
+          My documents
+        </button>
       </nav>
 
-      {noDocuments && (
+      {mode === "documents" && <DocumentsPanel onChanged={refreshHealth} />}
+
+      {noDocuments && mode !== "documents" && (
         <p className="notice">
-          No documents are loaded. Put your resume PDFs in <code>docs/</code> (or set{" "}
-          <code>RAG_DOCS_DIR</code>) and restart the server.
+          No documents are indexed. Open <strong>My documents</strong> to upload a resume.
         </p>
       )}
 
-      {mode === "tailor" ? (
+      {mode === "tailor" && (
         <section className="ask">
           <form
             onSubmit={(event) => {
@@ -193,7 +206,9 @@ export default function App() {
             </div>
           </form>
         </section>
-      ) : (
+      )}
+
+      {mode === "ask" && (
         <section className="ask">
           <form
             onSubmit={(event) => {
