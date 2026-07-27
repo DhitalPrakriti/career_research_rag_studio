@@ -272,3 +272,33 @@ def test_query_without_documents_returns_503(monkeypatch: pytest.MonkeyPatch) ->
 
     assert response.status_code == 503
     assert "No documents are loaded" in response.json()["detail"]
+
+
+def test_frontend_is_served_when_built(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Regression: the API worked but / returned 404 inside the container.
+
+    _frontend_dist walked up from the package file, which lands in site-packages once the
+    package is pip-installed rather than installed editable. FRONTEND_DIST and a
+    cwd-relative fallback cover that.
+    """
+    dist = tmp_path / "frontend" / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>ok</title>", encoding="utf-8")
+    monkeypatch.setenv("FRONTEND_DIST", str(dist))
+    monkeypatch.setattr(app_module.AgentService, "load", lambda self, docs_dir=None: None)
+
+    with TestClient(create_app("docs")) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "ok" in response.text
+
+
+def test_missing_frontend_leaves_the_api_working(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("FRONTEND_DIST", str(tmp_path / "nothing-here"))
+    monkeypatch.setattr(app_module.AgentService, "load", lambda self, docs_dir=None: None)
+
+    with TestClient(create_app("docs")) as client:
+        assert client.get("/healthz").status_code == 200

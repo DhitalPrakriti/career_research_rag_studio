@@ -1,0 +1,23 @@
+# Secrets must never reach the image. Cloud Run injects them as environment variables.
+.env
+*.env
+!.env.example
+
+# Local virtualenv and caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Built by the frontend stage inside the image
+frontend/node_modules/
+frontend/dist/
+
+# Local-only artefacts
+.git/
+.github/
+*.log
+evaluation/runs/
+.claude/

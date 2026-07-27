@@ -540,13 +540,43 @@ def _as_int(value: object) -> int | None:
         return None
 
 
+def _frontend_dist() -> Path | None:
+    """Locate the built frontend, or None when it has not been built.
+
+    Several candidates because the package's location relative to the build differs by
+    install mode. Under an editable install the repo sits four levels up from this file;
+    in the container the package is installed into site-packages, so that walk lands
+    inside Python's lib directory and the assets are next to the working directory
+    instead. Getting this wrong serves a 404 at / while every API route works, which is
+    exactly how it slipped through until the image was actually run.
+    """
+    candidates = []
+    override = os.getenv("FRONTEND_DIST")
+    if override:
+        candidates.append(Path(override))
+    candidates.append(Path(__file__).resolve().parents[3] / "frontend" / "dist")
+    candidates.append(Path.cwd() / "frontend" / "dist")
+
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    logger.warning(
+        "No built frontend found (looked in %s). The API works; the UI will 404 at /. "
+        "Run `npm run build` in frontend/, or set FRONTEND_DIST.",
+        ", ".join(str(path) for path in candidates),
+    )
+    return None
+
+
 def _mount_frontend(app: FastAPI) -> None:
     """Serve the built frontend when it exists, so one container serves both."""
-    dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
-    if not (dist / "index.html").exists():
+    dist = _frontend_dist()
+    if dist is None:
         return
 
-    app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
+    assets = dist / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
     @app.get("/")
     def index() -> FileResponse:
