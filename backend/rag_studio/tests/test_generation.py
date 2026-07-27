@@ -1,6 +1,6 @@
 import pytest
 
-from rag_studio.generation import _build_grounded_prompt, _ollama_options, trim_contexts
+from rag_studio.generation.generator import _build_grounded_prompt, _ollama_options, trim_contexts
 from rag_studio.schema import Chunk, RetrievedChunk
 
 

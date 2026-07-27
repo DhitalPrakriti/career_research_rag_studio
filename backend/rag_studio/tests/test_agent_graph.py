@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Any
 
-from rag_studio.agent_graph import CareerResearchAgent
-from rag_studio.query_router import QueryRouter
+from rag_studio.agents.graph import CareerResearchAgent
+from rag_studio.agents.router import QueryRouter
 from rag_studio.schema import Chunk, RagAnswer, RetrievedChunk
 
 

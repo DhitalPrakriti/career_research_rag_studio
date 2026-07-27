@@ -1,6 +1,6 @@
 import numpy as np
 
-from rag_studio.parent_child import ParentChildChunker, ParentContextResolver
+from rag_studio.ingestion.parent_child import ParentChildChunker, ParentContextResolver
 from rag_studio.pipeline import RagPipeline
 from rag_studio.schema import Chunk, Document, RetrievedChunk
 

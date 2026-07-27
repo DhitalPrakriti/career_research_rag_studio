@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rag_studio.agent_graph import CareerResearchAgent
-from rag_studio.agent_trace import format_trace
-from rag_studio.langsmith_tracing import configure_langsmith, langsmith_run_config
+from rag_studio.agents.graph import CareerResearchAgent
+from rag_studio.agents.trace import format_trace
+from rag_studio.agents.langsmith import configure_langsmith, langsmith_run_config
 
 
 def main() -> None:

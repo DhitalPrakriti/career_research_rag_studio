@@ -1,12 +1,12 @@
 import json
 
-from rag_studio.agent_evaluation import (
+from rag_studio.evaluation.agent_eval import (
     _count_trace_events,
     _last_trace_detail,
     _trace_detail,
     summarize_agent_records,
 )
-from rag_studio.agent_trace import add_trace_event
+from rag_studio.agents.trace import add_trace_event
 
 
 def test_trace_helpers_extract_agent_metadata() -> None:

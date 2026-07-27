@@ -35,43 +35,64 @@ Week 6 has not been started: there is no `backend/api`, no `frontend/`, and no
 
 ## Architecture
 
-The codebase is a single flat Python package rather than the layered directory tree
-originally sketched. Current layout:
+The package is organised by pipeline stage. Each stage is a subpackage that re-exports
+its public names, so `from rag_studio.agents import CareerResearchAgent` works as well as
+the full module path.
 
 ```
-docs/                     ← source documents (PDFs) live here
+docs/                       ← source documents (PDFs) live here
 evaluation/
-  golden_set.jsonl        ← 14 golden examples, incl. 3 negative controls
-  runs/                   ← eval outputs (gitignored)
+  golden_set.jsonl          ← 14 golden examples, incl. 3 negative controls
+  runs/                     ← eval outputs (gitignored)
 backend/rag_studio/
-  loader.py               ← PDF/txt/md loading + metadata (title, page, doc_type)
-  chunker.py              ← recursive chunking
-  parent_child.py         ← small child chunks for precision, parent chunks for context
-  embeddings.py           ← sentence-transformers embeddings
-  vector_store.py         ← FAISS dense index
-  bm25.py                 ← sparse retrieval
-  hybrid.py               ← dense + sparse fusion
-  reranker.py             ← cross-encoder reranking
-  multi_query.py          ← query variants + reciprocal rank fusion
-  hyde.py                 ← hypothetical document embeddings
-  pipeline.py             ← RagPipeline: ties ingestion + retrieval + generation
-  generation.py           ← grounded prompt, citations, Ollama/OpenAI/extractive fallback
-  query_router.py         ← rule-based route selection
-  retrieval_grader.py     ← relevance grading + reranking of retrieved context
-  query_rewriter.py       ← query expansion for retry attempts
-  agent_graph.py          ← LangGraph agent (see below)
-  agent_trace.py          ← per-node trace events
-  langsmith_tracing.py    ← LangSmith run configuration
-  evaluation.py           ← golden set loading + deterministic metrics
-  agent_evaluation.py     ← agent-level eval with route/grade/rewrite columns
-  failure_analysis.py     ← weakest-example inspection
-  cli.py, eval_cli.py, ragas_eval_cli.py, failure_cli.py,
-  agent_cli.py, agent_eval_cli.py
+  schema.py                 ← core types: Document, Chunk, RetrievedChunk, Citation, RagAnswer
+  config.py                 ← RagConfig, read from environment
+  pipeline.py               ← RagPipeline: composition root wiring the stages together
+
+  ingestion/                ← documents in, indexed chunks out
+    loader.py               ← PDF/txt/md loading + metadata (title, page, doc_type)
+    chunker.py              ← recursive word chunking
+    parent_child.py         ← small child chunks for precision, parents for context
+    embeddings.py           ← sentence-transformers embeddings
+    vector_store.py         ← FAISS dense index
+
+  retrieval/                ← ways of finding relevant chunks
+    bm25.py                 ← sparse retrieval
+    hybrid.py               ← dense + sparse reciprocal rank fusion
+    reranker.py             ← cross-encoder reranking
+    multi_query.py          ← query variants + fusion across them
+    hyde.py                 ← hypothetical document embeddings
+
+  generation/
+    generator.py            ← grounded prompt, citations, Ollama/OpenAI/extractive fallback
+
+  agents/                   ← decisions the agent makes about retrieval
+    graph.py                ← CareerResearchAgent, the LangGraph (see below)
+    router.py               ← rule-based route selection
+    grader.py               ← relevance grading + reranking of retrieved context
+    rewriter.py             ← query expansion for retry attempts
+    trace.py                ← per-node trace events
+    langsmith.py            ← LangSmith run configuration
+
+  evaluation/
+    golden_set.py           ← golden set loading + deterministic metrics
+    agent_eval.py           ← agent-level eval with route/grade/rewrite columns
+    failure_analysis.py     ← weakest-example inspection
+
+  cli.py, agent_cli.py, eval_cli.py, agent_eval_cli.py,
+  ragas_eval_cli.py, failure_cli.py     ← entry points, kept at the root so the
+                                          documented `python -m rag_studio.<name>`
+                                          commands stay stable
+
+  tests/                    ← one test module per implementation module
 ```
+
+Routing, grading and rewriting live under `agents/` rather than `retrieval/` because they
+are decisions the agent makes *about* retrieval, not retrieval strategies themselves.
 
 ### The agent graph
 
-`CareerResearchAgent` in `agent_graph.py` compiles this LangGraph:
+`CareerResearchAgent` in `agents/graph.py` compiles this LangGraph:
 
 ```
 route_query ──┬─→ direct_answer ─────────────────────────────→ END

@@ -1,4 +1,4 @@
-from rag_studio.query_rewriter import QueryRewriter
+from rag_studio.agents.rewriter import QueryRewriter
 
 
 def test_query_rewriter_expands_ai_questions() -> None:

@@ -1,6 +1,6 @@
 import pytest
 
-from rag_studio.langsmith_tracing import configure_langsmith, langsmith_run_config
+from rag_studio.agents.langsmith import configure_langsmith, langsmith_run_config
 
 
 def test_configure_langsmith_returns_disabled_settings_without_api_key(

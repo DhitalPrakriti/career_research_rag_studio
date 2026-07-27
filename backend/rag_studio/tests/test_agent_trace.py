@@ -1,4 +1,4 @@
-from rag_studio.agent_trace import add_trace_event, format_trace
+from rag_studio.agents.trace import add_trace_event, format_trace
 
 
 def test_add_trace_event_appends_without_mutating_original_trace() -> None:

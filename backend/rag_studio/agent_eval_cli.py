@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from rag_studio.agent_evaluation import run_agent_evaluation, summarize_agent_records
-from rag_studio.evaluation import save_jsonl
+from rag_studio.evaluation.agent_eval import run_agent_evaluation, summarize_agent_records
+from rag_studio.evaluation.golden_set import save_jsonl
 
 
 def main() -> None:

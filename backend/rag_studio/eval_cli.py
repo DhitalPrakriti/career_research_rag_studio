@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from rag_studio.evaluation import run_evaluation, save_jsonl, summarize_records
+from rag_studio.evaluation.golden_set import run_evaluation, save_jsonl, summarize_records
 
 
 def main() -> None:

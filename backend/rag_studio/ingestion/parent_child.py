@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rag_studio.chunker import WordChunker
+from rag_studio.ingestion.chunker import WordChunker
 from rag_studio.schema import Chunk, Document, RetrievedChunk
 
 

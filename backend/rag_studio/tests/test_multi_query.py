@@ -1,4 +1,4 @@
-from rag_studio.multi_query import generate_query_variants, reciprocal_rank_fusion_many
+from rag_studio.retrieval.multi_query import generate_query_variants, reciprocal_rank_fusion_many
 from rag_studio.schema import Chunk, RetrievedChunk
 
 

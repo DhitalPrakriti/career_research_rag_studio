@@ -1,4 +1,4 @@
-from rag_studio.evaluation import contains_expected_term, doc_title_hit, term_recall
+from rag_studio.evaluation.golden_set import contains_expected_term, doc_title_hit, term_recall
 
 
 def test_term_recall_scores_expected_terms_found_in_contexts() -> None:

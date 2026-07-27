@@ -3,19 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rag_studio.bm25 import BM25Retriever
-from rag_studio.chunker import WordChunker
+from rag_studio.retrieval.bm25 import BM25Retriever
+from rag_studio.ingestion.chunker import WordChunker
 from rag_studio.config import RagConfig
-from rag_studio.embeddings import SentenceTransformerEmbedder
-from rag_studio.generation import AnswerGenerator, build_citations
-from rag_studio.hybrid import reciprocal_rank_fusion
-from rag_studio.hyde import HydeGenerator
-from rag_studio.loader import load_documents
-from rag_studio.multi_query import generate_query_variants, reciprocal_rank_fusion_many
-from rag_studio.parent_child import ParentChildChunker, ParentContextResolver
-from rag_studio.reranker import CrossEncoderReranker
+from rag_studio.ingestion.embeddings import SentenceTransformerEmbedder
+from rag_studio.generation.generator import AnswerGenerator, build_citations
+from rag_studio.retrieval.hybrid import reciprocal_rank_fusion
+from rag_studio.retrieval.hyde import HydeGenerator
+from rag_studio.ingestion.loader import load_documents
+from rag_studio.retrieval.multi_query import generate_query_variants, reciprocal_rank_fusion_many
+from rag_studio.ingestion.parent_child import ParentChildChunker, ParentContextResolver
+from rag_studio.retrieval.reranker import CrossEncoderReranker
 from rag_studio.schema import Chunk, RagAnswer, RetrievedChunk
-from rag_studio.vector_store import FaissVectorStore
+from rag_studio.ingestion.vector_store import FaissVectorStore
 
 
 

@@ -1,4 +1,4 @@
-from rag_studio.query_router import QueryRouter
+from rag_studio.agents.router import QueryRouter
 
 
 def test_router_sends_greeting_to_direct_answer() -> None:

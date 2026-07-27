@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rag_studio.agent_graph import CareerResearchAgent
-from rag_studio.agent_trace import AgentTraceEvent
-from rag_studio.evaluation import (
+from rag_studio.agents.graph import CareerResearchAgent
+from rag_studio.agents.trace import AgentTraceEvent
+from rag_studio.evaluation.golden_set import (
     doc_title_hit,
     load_golden_set,
     summarize_records,

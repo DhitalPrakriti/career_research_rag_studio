@@ -1,6 +1,6 @@
 import pytest
 
-from rag_studio.retrieval_grader import RetrievalGrader
+from rag_studio.agents.grader import RetrievalGrader
 from rag_studio.schema import Chunk, RetrievedChunk
 
 

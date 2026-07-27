@@ -1,4 +1,4 @@
-from rag_studio.hyde import HydeGenerator
+from rag_studio.retrieval.hyde import HydeGenerator
 
 
 def test_hyde_generator_has_deterministic_fallback(monkeypatch) -> None:
