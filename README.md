@@ -34,9 +34,12 @@ analysis, and the LangGraph agent that routes, grades its own retrieval and retr
 rewritten query.
 
 Also working: a FastAPI service and a React + TypeScript UI that surfaces the routing
-decision, the retrieval grade, the trace and the retrieved chunks for every answer.
+decision, the retrieval grade, the trace and the retrieved chunks for every answer, behind a
+password-gated session, with documents uploaded, reindexed and deleted at runtime rather than
+by restarting.
 
-Deployed to Google Cloud Run from a single container that serves both the API and the UI.
+Deployed to Google Cloud Run from a single container that serves both the API and the UI,
+with uploaded documents persisted to a mounted GCS bucket so they outlive the container.
 
 ## Architecture
 
@@ -47,7 +50,8 @@ the full module path.
 ```
 docs/                       ← source documents (PDFs) live here
 evaluation/
-  golden_set.jsonl          ← 14 golden examples, incl. 3 negative controls
+  golden_set.jsonl          ← 33 golden examples, incl. 8 negative controls
+  tailoring_set.jsonl       ← 6 labelled job postings for the tailoring eval
   runs/                     ← eval outputs (gitignored)
 backend/rag_studio/
   schema.py                 ← core types: Document, Chunk, RetrievedChunk, Citation, RagAnswer
@@ -88,13 +92,16 @@ backend/rag_studio/
   evaluation/
     golden_set.py           ← golden set loading, metrics, negative-control handling
     agent_eval.py           ← agent-level eval with route/grade/rewrite columns
+    tailoring_eval.py       ← grounding and classification metrics for tailoring
     failure_analysis.py     ← weakest-example inspection
 
   api/
     app.py                  ← FastAPI app; ingests once at startup, serves the built UI
+    auth.py                 ← password hashing, signed session cookie, login throttling
+    documents.py            ← validated save/list/delete under the documents directory
     models.py               ← request/response schemas
 
-  cli.py, agent_cli.py, eval_cli.py, agent_eval_cli.py,
+  cli.py, agent_cli.py, eval_cli.py, agent_eval_cli.py, tailor_eval_cli.py,
   ragas_eval_cli.py, failure_cli.py     ← entry points, kept at the root so the
                                           documented `python -m rag_studio.<name>`
                                           commands stay stable
@@ -104,7 +111,8 @@ frontend/
   src/
     api.ts                  ← typed client mirroring api/models.py
     App.tsx                 ← page composition
-    components/             ← StatRow, RouteCard, TraceTimeline, SourceList, Badge
+    components/             ← StatRow, RouteCard, TraceTimeline, SourceList, Badge,
+                              TailorResult, DocumentsPanel, LoginScreen
     styles.css              ← light/dark theme from the validated palette
 ```
 
@@ -162,11 +170,37 @@ route_query ──┬─→ direct_answer ────────────�
 
 - **route_query** classifies the question into one of four categories and maps that to
   retrieval settings. See below.
-- **grade_retrieval** scores question↔context token overlap. Below the threshold the agent
-  rewrites the query and retries, up to `max_retries` (default 1), then answers anyway
+- **grade_retrieval** scores question↔context token overlap. Below the threshold (0.2) the
+  agent rewrites the query and retries, up to `max_retries` (default 1), then answers anyway
   with an explicit low-confidence caveat rather than silently guessing.
 - Every node appends an `AgentTraceEvent`, surfaced via `--show-trace` and used as
   evaluation columns.
+
+Two deliberate details in the graph:
+
+- **The grader scores the original question, not the rewrite.** `_grade_retrieval` reads
+  `state["question"]` while `_retrieve_answer` searches with `state["retrieval_question"]`.
+  Relevance has to be measured against what was actually asked, or a machine-generated
+  rewrite ends up grading itself favourably.
+- **Retries cannot compound drift.** `_rewrite_query` rewrites the original question rather
+  than the previous rewrite, so a second attempt cannot spiral away from the intent.
+
+**Known flaw in the grade: filler words deflate it.** The score is
+`matched content tokens / total content tokens`, and the stop list in `agents/grader.py`
+covers question words (`what`, `are`, `the`, `my`) but not conversational filler. "what are
+the projects that i have" leaves four tokens — `project`, `that`, `i`, `have` — and only
+`project` matched anything in the resumes, so a retrieval that returned exactly the right
+pages graded 0.25.
+It cleared the 0.2 threshold by 0.05. Phrase the same question with a little more filler and
+it dips under, firing a rewrite and retry that costs an LLM call and several seconds for
+retrieval that was already correct. The grade is measuring phrasing, not retrieval quality.
+Adding `that`, `i`, `have`, `me` and similar to the stop list is the fix.
+
+None of this affects retrieval or the answer. Four separate stages tokenise independently:
+BM25 removes no stop words at all (its IDF term already discounts words that appear
+everywhere), multi-query keeps its own list for building a keyword-only variant, dense search
+embeds the untouched sentence, and the generator receives the original question verbatim. The
+grader's stop list is used for scoring alone.
 
 ### Routing
 
@@ -188,8 +222,8 @@ always show which classifier actually ran.
 
 **The rules key on question form, never on corpus vocabulary.** They previously matched
 literals lifted straight from the golden set — `"binary f1"`, `"macro f1"`, `"score did"`,
-`"what database"` — which is tuning the router on the test set. It scored well on those 14
-sentences and generalised to nothing: "What binary F1 score was achieved?" took the
+`"what database"` — which is tuning the router on the test set. It scored well on the 14
+sentences the set held then and generalised to nothing: "What binary F1 score was achieved?" took the
 precision route while "How accurate was the model?" fell through to the default. A test now
 greps the module for those literals so the shortcut cannot come back.
 
@@ -206,12 +240,17 @@ meta, with examples.
 
 Replacing the overfitted rules changed no measured outcome — answerable term recall 1.000,
 doc-title hit 1.000, refusal accuracy 1.000, mean grade 0.617 across the overfitted rules,
-the general rules and the LLM classifier alike — and the rewrite rate fell from 0.071 to
-0.000, so the special case it existed for was not needed. The LLM classifier does make
-better-reasoned choices that the current golden set cannot reward: it treats "What is
-Prakriti's GPA?" as a single-value question and takes the precision route, where the rules
-fall back to balanced. That the numbers cannot tell these three apart is itself the
-argument for a harder golden set.
+the general rules and the LLM classifier alike, measured on the 14-example set — and the
+rewrite rate fell from 0.071 to 0.000, so the special case it existed for was not needed.
+The LLM classifier does make better-reasoned choices that no version of the golden set has
+rewarded: it treats "What is Prakriti's GPA?" as a single-value question and takes the
+precision route, where the rules fall back to balanced.
+
+That the numbers could not tell these three apart was read at the time as an argument for a
+harder golden set. The set was duly rebuilt at 33 examples, and they still cannot — see
+[why the retrieval metrics were saturated](#why-the-retrieval-metrics-were-saturated-which-was-not-the-golden-sets-fault)
+for what was actually in the way. On the current set the agent's mean grade is 0.547 and its
+rewrite rate 0.030.
 
 ## Tech stack
 
@@ -223,11 +262,13 @@ argument for a harder golden set.
 | Vector store | FAISS |
 | Sparse retrieval | BM25 |
 | Reranker | cross-encoder (ms-marco-MiniLM-L-6-v2) |
-| LLM | Ollama (local) / OpenAI, with extractive fallback |
+| LLM | Gemini (default in production) / LiteLLM proxy / OpenAI-compatible / Ollama, with extractive fallback |
 | Orchestration | LangGraph |
 | Evaluation | deterministic metrics + RAGAS |
 | Observability | local trace + LangSmith |
-| Backend / Frontend / Deployment | not yet built |
+| Backend | FastAPI, serving the built UI from the same origin |
+| Frontend | React + TypeScript, built with Vite |
+| Deployment | Docker → Google Cloud Run, GCS-mounted documents volume, Secret Manager |
 
 ## Setup
 
@@ -237,7 +278,7 @@ python -m venv venv
 .\venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
 
 # 2. Install the package and extras
-pip install -e ".[dev,eval,agent]"
+pip install -e ".[dev,eval,agent,api]"
 
 # 3. Configure your keys
 copy .env.example .env           # then fill in GEMINI_API_KEY
@@ -245,6 +286,13 @@ copy .env.example .env           # then fill in GEMINI_API_KEY
 # 4. Run the tests
 pytest backend/rag_studio/tests -q
 ```
+
+Install `api` even if you only mean to work on retrieval: `test_api.py` and `test_auth.py`
+import `fastapi.testclient`, so the suite errors without it.
+
+The suite is offline and deterministic by design. `conftest.py` clears every provider
+variable, so a populated `.env` cannot make the tests reach a live provider and bill real
+money — a test that wants a provider sets it itself.
 
 ### Choosing a generation backend
 
@@ -294,9 +342,16 @@ and proxies `/api` to port 8000, so hot reload works against the live backend.
 The UI is built to make the agent legible rather than to look like a chat app: each answer
 carries the route the agent chose and why, its own relevance grade, how many rewrite
 retries it needed, the ordered trace of graph nodes it executed, and every retrieved chunk
-behind a disclosure so a citation can be checked against the exact text the model saw. Ask
-a negative-control question such as "What is my GPA?" to watch the rewrite-and-retry path
-fire and the agent decline to answer.
+behind a disclosure so a citation can be checked against the exact text the model saw.
+
+Ask "What is my GPA?" to watch the agent decline to answer — but note it declines *without*
+rewriting. Retrieval grades 0.667 there, comfortably relevant, because the question's terms
+do appear in the resumes; it is only the specific fact that is missing, so the refusal comes
+from generation, not from the grader. The rewrite-and-retry path fires on low lexical
+overlap instead. Across the 33-example golden set exactly one question triggered it:
+`paraphrase_reproducibility` ("What was done so the model results could be obtained again
+later?"), which graded 0.111 precisely because it was written to share no vocabulary with
+the source.
 
 Endpoints: `GET /api/health`, `POST /api/tailor`, `POST /api/query`, the document
 endpoints below, and OpenAPI docs at `/docs`.
@@ -359,8 +414,9 @@ still add or delete documents. Set `ALLOW_DOCUMENT_WRITES=false` for any deploym
 publicly reachable, or put auth in front of it. The health and documents responses both
 report `writes_enabled` so the UI hides the controls when it is off.
 
-Documents are ingested once at startup from `docs/` (override with `RAG_DOCS_DIR`), because
-ingestion builds an embedding index in seconds while a query takes milliseconds.
+The documents directory is `docs/` by default and `RAG_DOCS_DIR` overrides it — which is how
+the deployment points the whole document lifecycle at a mounted GCS bucket instead of the
+container filesystem, with no code change.
 
 There is deliberately no module-level `app = create_app()`; that would run `load_dotenv()`
 on import and leak real credentials into any process that imports the module, including the
