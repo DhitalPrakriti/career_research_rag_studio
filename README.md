@@ -5,6 +5,8 @@ career documents — resumes, job descriptions, class notes, and research papers
 Built by Prakriti Dhital as a portfolio project covering the full RAG lifecycle:
 ingestion → retrieval → evaluation → agentic routing → deployment.
 
+Live app	https://career-rag-studio-1079009244955.us-central1.run.app
+
 ## What it does
 
 **Paste a job description and get your resume rewritten against it.** The tool pulls the
