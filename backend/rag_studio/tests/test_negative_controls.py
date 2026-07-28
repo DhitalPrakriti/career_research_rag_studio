@@ -42,6 +42,37 @@ def test_answer_refuses_accepts_a_grounded_no_for_absence_verification() -> None
     )
 
 
+def test_answer_refuses_covers_the_present_tense_of_a_negated_verb() -> None:
+    """The literal marker list had "not provided" but not "do not provide".
+
+    A harder negative control caught it: asking for the CNN-BiLSTM F1 score, which the
+    documents never report, produced the ideal answer — a refusal that attributes both
+    scores that *do* exist to the right models — and it was counted as a fabrication.
+    """
+    assert (
+        answer_refuses(
+            "The provided sources mention that the CNN-BiLSTM model was one of eight deep "
+            "learning models evaluated [1]. However, the sources do not provide the "
+            "specific F1 score achieved by the CNN-BiLSTM model; they only report the F1 "
+            "scores for the Late Fusion model (94.28% Binary F1) and the Transformer "
+            "model (85.98% Macro F1) [1]."
+        )
+        is True
+    )
+
+
+def test_answer_refuses_handles_every_tense_and_contraction() -> None:
+    for phrasing in (
+        "The sources do not provide a GPA.",
+        "The resume does not report any certifications.",
+        "The documents don't list a salary expectation.",
+        "The source doesn't disclose an internship.",
+        "The resume did not indicate a duration.",
+        "The sources do not reference any AWS services.",
+    ):
+        assert answer_refuses(phrasing) is True, phrasing
+
+
 def test_answer_refuses_detects_the_agents_own_low_confidence_message() -> None:
     """The graph emits this when retrieval grades irrelevant after the last retry."""
     assert (

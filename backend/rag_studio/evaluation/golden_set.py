@@ -71,6 +71,41 @@ _REFUSAL_MARKERS = (
     "not relevant enough",
 )
 
+# Enumerating literal markers left a tense-shaped hole. "not provided" was covered but
+# "do not provide" was not, so this correct refusal scored as a fabrication:
+#
+#   "the sources do not provide the specific F1 score achieved by the CNN-BiLSTM model;
+#    they only report the F1 scores for the Late Fusion model (94.28% Binary F1) and the
+#    Transformer model (85.98% Macro F1)"
+#
+# which is the ideal answer to that negative control — it declines and attributes both
+# real scores to the right models. One pattern over the negated-verb family closes the
+# hole for every tense and contraction at once, and stays a deterministic match rather
+# than another LLM call.
+_NEGATED_VERBS = (
+    "mention",
+    "specify",
+    "state",
+    "include",
+    "contain",
+    "provide",
+    "report",
+    "list",
+    "detail",
+    "indicate",
+    "give",
+    "disclose",
+    "note",
+    "offer",
+    "cover",
+    "reference",
+)
+
+_NEGATED_VERB_PATTERN = re.compile(
+    r"\b(?:do|does|did)(?:\s+not|n[’']t)\s+(?:" + "|".join(_NEGATED_VERBS) + r")\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class GoldenExample:
@@ -181,7 +216,9 @@ def is_negative_control(reference: str) -> bool:
 def answer_refuses(answer: str) -> bool:
     """Whether an answer admits the information is not in the sources."""
     lowered = answer.lower()
-    return any(marker in lowered for marker in _REFUSAL_MARKERS)
+    if any(marker in lowered for marker in _REFUSAL_MARKERS):
+        return True
+    return _NEGATED_VERB_PATTERN.search(answer) is not None
 
 
 def summarize_records(records: list[dict[str, Any]]) -> dict[str, float]:
