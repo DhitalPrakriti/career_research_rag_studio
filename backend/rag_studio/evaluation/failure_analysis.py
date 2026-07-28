@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rag_studio.evaluation import contains_expected_term
+from rag_studio.evaluation.golden_set import contains_expected_term
 
 
 @dataclass(frozen=True)

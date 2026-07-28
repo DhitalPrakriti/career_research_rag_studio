@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from rag_studio.failure_analysis import (
+from rag_studio.evaluation.failure_analysis import (
     failed_examples,
     format_failure_report,
     load_failure_examples,

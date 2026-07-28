@@ -1,4 +1,4 @@
-from rag_studio.bm25 import BM25Retriever
+from rag_studio.retrieval.bm25 import BM25Retriever
 from rag_studio.schema import Chunk
 
 

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from rag_studio.failure_analysis import (
+from rag_studio.evaluation.failure_analysis import (
     FailureExample,
     failed_examples,
     format_failure_report,

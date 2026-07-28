@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from rag_studio.loader import load_document
+from rag_studio.ingestion.loader import load_document
 
 
 def test_load_pdf_adds_expected_metadata() -> None:

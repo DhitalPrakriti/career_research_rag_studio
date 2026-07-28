@@ -5,7 +5,14 @@ import os
 import urllib.error
 import urllib.request
 
+from rag_studio.llm import OLLAMA, complete, resolve_provider
 from rag_studio.schema import Citation, RetrievedChunk
+
+
+SYSTEM_INSTRUCTION = (
+    "You are a grounded career research assistant. Answer directly from the provided "
+    "sources and cite claims inline with bracketed source numbers like [1]."
+)
 
 
 class AnswerGenerator:
@@ -15,21 +22,36 @@ class AnswerGenerator:
         self.max_context_chars = max_context_chars
 
     def generate(self, question: str, contexts: list[RetrievedChunk]) -> str:
-        contexts = trim_contexts(contexts, self.max_context_chars)
-        api_key = os.getenv("OPENAI_API_KEY")
-        openai_model = os.getenv("OPENAI_MODEL")
-        if api_key and openai_model:
-            return _generate_with_openai(question, contexts, openai_model)
+        """Answer the question using the configured provider.
 
-        ollama_model = os.getenv("OLLAMA_MODEL")
-        if ollama_model:
+        Falls back to an extractive answer only when no provider is configured at
+        all. A configured provider that fails raises instead of falling back, so a
+        broken key or quota cannot silently turn an evaluation run into a set of
+        extractive text dumps.
+        """
+        contexts = trim_contexts(contexts, self.max_context_chars)
+        config = resolve_provider()
+
+        if not config.is_llm:
+            return _generate_extractive_answer(question, contexts)
+
+        if config.provider == OLLAMA:
             try:
-                return _generate_with_ollama(question, contexts, ollama_model)
+                return _generate_with_ollama(
+                    question,
+                    contexts,
+                    config.model or "llama3",
+                )
             except RuntimeError as exc:
                 fallback = _generate_extractive_answer(question, contexts)
                 return f"Ollama generation failed: {exc}\n\n{fallback}"
 
-        return _generate_extractive_answer(question, contexts)
+        return complete(
+            _build_grounded_prompt(question, contexts),
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.0,
+            config=config,
+        )
 
 
 def build_citations(contexts: list[RetrievedChunk]) -> list[Citation]:
@@ -52,33 +74,6 @@ def build_citations(contexts: list[RetrievedChunk]) -> list[Citation]:
     return citations
 
 
-def _generate_with_openai(question: str, contexts: list[RetrievedChunk], model: str) -> str:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("Install openai to use LLM generation: pip install openai") from exc
-
-    client = OpenAI()
-    response = client.responses.create(
-        model=model,
-        input=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a grounded career research assistant. Answer directly from "
-                    "the provided sources and cite claims inline with bracketed source "
-                    "numbers like [1]."
-                ),
-            },
-            {
-                "role": "user",
-                "content": _build_grounded_prompt(question, contexts),
-            },
-        ],
-    )
-    return response.output_text.strip()
-
-
 def _generate_with_ollama(question: str, contexts: list[RetrievedChunk], model: str) -> str:
     base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
     timeout = float(os.getenv("OLLAMA_TIMEOUT", "120"))
@@ -86,6 +81,7 @@ def _generate_with_ollama(question: str, contexts: list[RetrievedChunk], model: 
         "model": model,
         "prompt": _build_grounded_prompt(question, contexts),
         "stream": False,
+        "options": _ollama_options(),
     }
     request = urllib.request.Request(
         f"{base_url}/api/generate",
@@ -108,6 +104,24 @@ def _generate_with_ollama(question: str, contexts: list[RetrievedChunk], model: 
     if not answer:
         raise RuntimeError("Ollama returned an empty answer.")
     return answer
+
+
+def _ollama_options() -> dict[str, int]:
+    options: dict[str, int] = {}
+    env_to_option = {
+        "OLLAMA_NUM_GPU": "num_gpu",
+        "OLLAMA_NUM_THREAD": "num_thread",
+        "OLLAMA_NUM_PREDICT": "num_predict",
+    }
+    for env_name, option_name in env_to_option.items():
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            continue
+        try:
+            options[option_name] = int(raw_value)
+        except ValueError as exc:
+            raise RuntimeError(f"{env_name} must be an integer.") from exc
+    return options
 
 
 def _build_grounded_prompt(question: str, contexts: list[RetrievedChunk]) -> str:

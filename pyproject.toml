@@ -9,6 +9,7 @@ description = "Career research RAG studio with local retrieval and generation."
 requires-python = ">=3.11"
 dependencies = [
     "faiss-cpu==1.13.2",
+    "google-genai>=2.14.0",
     "numpy==2.4.4",
     "pypdf==6.10.2",
     "python-dotenv==1.2.2",
@@ -21,11 +22,22 @@ dev = [
 ]
 eval = [
     "datasets",
+    "langchain-google-genai",
     "langchain-ollama",
+    # ragas 0.4.3 depends on langchain-community without an upper bound, but
+    # imports langchain_community.chat_models.vertexai at module load. That module
+    # was removed in langchain-community 0.4, so an unpinned install makes every
+    # `import ragas` fail with ModuleNotFoundError regardless of which judge you
+    # use. Pin below 0.4 until ragas fixes the import.
+    "langchain-community<0.4",
     "ragas",
 ]
 agent = [
     "langgraph",
+]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
 ]
 
 [tool.setuptools.packages.find]

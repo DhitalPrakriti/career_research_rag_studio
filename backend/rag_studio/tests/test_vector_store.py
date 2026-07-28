@@ -1,7 +1,7 @@
 import numpy as np
 
 from rag_studio.schema import Chunk
-from rag_studio.vector_store import FaissVectorStore
+from rag_studio.ingestion.vector_store import FaissVectorStore
 
 
 def test_vector_store_applies_metadata_filter_after_similarity_search() -> None:

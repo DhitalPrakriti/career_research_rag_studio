@@ -9,6 +9,69 @@ from typing import Any
 from rag_studio.pipeline import RagPipeline
 
 
+# Marker used in the golden set for questions whose answer is deliberately absent
+# from the documents. These are negative controls: the only correct behaviour is to
+# refuse, so retrieval and relevancy metrics do not apply to them.
+NOT_IN_DOCUMENTS = "NOT_IN_DOCUMENTS"
+
+# Heuristic, and deliberately so: refusal detection stays deterministic and testable
+# rather than depending on another LLM call to score the thing under test.
+#
+# Negative controls come in two shapes and both count as correct here, because what is
+# actually being measured is "did not fabricate":
+#   1. Unanswerable value questions ("What is the GPA?") where the documents are silent,
+#      so the right answer is "not mentioned".
+#   2. Absence-verification questions ("Has Prakriti worked at Google?") where the
+#      documents list the full history, so a confident "there is no record of that" is the
+#      ideal answer rather than a hedge.
+# Markers for both appear below.
+_REFUSAL_MARKERS = (
+    "not mentioned",
+    "not specified",
+    "not stated",
+    "not provided",
+    "not included",
+    "not listed",
+    "not available",
+    "not found",
+    "not in the source",
+    "not present",
+    "does not mention",
+    "does not specify",
+    "does not state",
+    "does not include",
+    "does not contain",
+    "do not mention",
+    "do not specify",
+    "do not state",
+    "do not include",
+    "do not contain",
+    "don't mention",
+    "doesn't mention",
+    "isn't mentioned",
+    "aren't mentioned",
+    "no information",
+    "no mention",
+    # Absence-verification phrasing: a grounded "no" rather than a hedge.
+    "no record",
+    "no evidence",
+    "no indication",
+    "does not appear",
+    "do not appear",
+    "not appear to",
+    "cannot determine",
+    "cannot find",
+    "could not find",
+    "unable to determine",
+    "is missing",
+    "insufficient",
+    # The agent's own low-confidence message, emitted when retrieval grades irrelevant
+    # after the last retry. It is a refusal and must count as one.
+    "not look relevant enough",
+    "not relevant enough",
+)
+
+
 @dataclass(frozen=True)
 class GoldenExample:
     id: str
@@ -17,6 +80,10 @@ class GoldenExample:
     reference: str
     expected_terms: list[str]
     expected_doc_titles: list[str]
+
+    @property
+    def is_negative_control(self) -> bool:
+        return is_negative_control(self.reference)
 
 
 def load_golden_set(path: str | Path) -> list[GoldenExample]:
@@ -86,6 +153,10 @@ def run_evaluation(
                 "retrieved_titles": retrieved_titles,
                 "term_recall": term_recall(contexts, example.expected_terms),
                 "doc_title_hit": doc_title_hit(retrieved_titles, example.expected_doc_titles),
+                "is_negative_control": example.is_negative_control,
+                "refusal_correct": (
+                    answer_refuses(result.answer) if example.is_negative_control else None
+                ),
             }
         )
     return records
@@ -99,12 +170,58 @@ def save_jsonl(records: list[dict[str, Any]], path: str | Path) -> None:
             file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def is_negative_control(reference: str) -> bool:
+    return reference.strip().upper() == NOT_IN_DOCUMENTS
+
+
+def answer_refuses(answer: str) -> bool:
+    """Whether an answer admits the information is not in the sources."""
+    lowered = answer.lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)
+
+
 def summarize_records(records: list[dict[str, Any]]) -> dict[str, float]:
+    """Summarise a run, keeping answerable questions and negative controls apart.
+
+    Averaging the two classes together is misleading in both directions. Retrieval
+    metrics are meaningless for a negative control — there is nothing to retrieve, and
+    term_recall returns 1.0 for an empty expected_terms list, so every negative control
+    is a free pass that inflates the headline number. Conversely the only thing worth
+    measuring on a negative control is whether the system refused instead of
+    hallucinating, which is what refusal_accuracy reports.
+    """
     if not records:
-        return {"term_recall": 0.0, "doc_title_hit": 0.0}
+        return {
+            "term_recall": 0.0,
+            "doc_title_hit": 0.0,
+            "answerable_term_recall": 0.0,
+            "answerable_doc_title_hit": 0.0,
+            "refusal_accuracy": 0.0,
+            "answerable_count": 0.0,
+            "negative_control_count": 0.0,
+        }
+
+    answerable = [record for record in records if not record.get("is_negative_control")]
+    negatives = [record for record in records if record.get("is_negative_control")]
+
+    def mean(rows: list[dict[str, Any]], key: str) -> float:
+        if not rows:
+            return 0.0
+        return sum(float(row[key]) for row in rows) / len(rows)
+
     return {
-        "term_recall": sum(float(record["term_recall"]) for record in records) / len(records),
-        "doc_title_hit": sum(float(record["doc_title_hit"]) for record in records) / len(records),
+        # Kept for continuity with earlier runs, but read the answerable_* figures.
+        "term_recall": mean(records, "term_recall"),
+        "doc_title_hit": mean(records, "doc_title_hit"),
+        "answerable_term_recall": mean(answerable, "term_recall"),
+        "answerable_doc_title_hit": mean(answerable, "doc_title_hit"),
+        "refusal_accuracy": (
+            sum(1 for row in negatives if row.get("refusal_correct")) / len(negatives)
+            if negatives
+            else 0.0
+        ),
+        "answerable_count": float(len(answerable)),
+        "negative_control_count": float(len(negatives)),
     }
 
 
