@@ -390,8 +390,21 @@ Add `--langsmith` (requires `LANGSMITH_API_KEY`) to ship the run to LangSmith;
 
 ## Evaluation
 
-The golden set has 14 examples: 11 answerable questions and 3 **negative controls** (GPA,
-salary, work experience) whose answers are deliberately absent from the documents.
+The golden set has 33 examples: 25 answerable questions and 8 **negative controls** whose
+answers are deliberately absent from the documents. 24 of them search all three resumes
+rather than the one known to hold the answer.
+
+The answerable questions come in shapes chosen to break different parts of retrieval:
+
+- **Paraphrase-only** — no keyword overlap with the source, so BM25 cannot shortcut it and
+  the dense side has to carry it. "How does the tutoring system remember what a student
+  said earlier in the conversation?" never says *database* or *Firestore*. One is a
+  deliberate pair with `tutoring_memory`, which asks the same fact with the keywords in.
+- **Multi-hop** — two facts, so one lucky chunk is not enough.
+- **Distractor-sensitive** — a near-duplicate section in another resume offers a plausible
+  wrong answer. The tutoring system is Cloud Run + Docker on one resume and Vertex AI Agent
+  Engine on another; only one of those answers "which cloud service hosts it".
+- **Aggregation** — counting or naming across a list.
 
 ### Why the two classes are scored separately
 
@@ -402,7 +415,8 @@ two classes together is misleading in both directions.
 - **Retrieval metrics do not apply to a negative control.** There is nothing to retrieve.
   Worse, `term_recall` returns 1.0 for an empty `expected_terms` list, so each negative
   control is a free 1.0 that inflates the headline figure. The CLIs now report
-  `answerable_term_recall` and `answerable_doc_title_hit` alongside the blended numbers.
+  `answerable_term_recall`, `answerable_doc_title_hit` and `answerable_doc_precision`
+  alongside the blended numbers.
 - **RAGAS `answer_relevancy` actively punishes correct behaviour on them.** It classifies
   "that information is not in the sources" as *noncommittal* and floors the score to 0.00.
   Both `negative_gpa` and `negative_salary` score exactly 0.00 for refusing correctly.
@@ -423,31 +437,99 @@ it really measures is *did not fabricate*:
   documents contain the full history, so a confident "there is no record of that" is the
   ideal answer, not a hedge.
 
-Current results (n=3): **refusal accuracy 1.000** — every negative control was handled
-without fabricating. Answerable term recall and doc-title hit are 1.000 (n=11), so the free
-1.0s from the negative controls were not hiding anything, but the split is now explicit.
+#### Negative controls with a plausible wrong answer in reach
+
+GPA and salary are easy, and it took a while to see why: nothing in the documents resembles
+an answer, so refusing needs no more than noticing the topic is absent. The five added
+controls each sit next to an answer the documents *do* contain.
+
+The sharpest is `negative_cnn_bilstm_f1`. CNN-BiLSTM is named as one of eight architectures,
+but only two models have reported scores — 94.28% Binary F1 for Late Fusion and 85.98% Macro
+F1 for Transformer. A number is right there to be misattributed. The answer:
+
+> The provided sources mention that the CNN-BiLSTM model was one of eight deep learning
+> models evaluated [1, 2, 3]. However, the sources do not provide the specific F1 score
+> achieved by the CNN-BiLSTM model; they only report the F1 scores for the Late Fusion model
+> (94.28% Binary F1) and the Transformer model (85.98% Macro F1) [1, 2, 3].
+
+That is the ideal answer — it declines *and* attributes both real scores to the right models.
+`negative_aws_services` behaves the same way, quoting "AWS & Azure familiarity" and declining
+to name services that are not there.
+
+**And it was scored as a fabrication.** The marker list had `not provided` but not
+`do not provide`, so refusal accuracy read 0.875 while the system was behaving perfectly.
+Enumerating literals per tense was never going to hold, so one pattern now covers the
+negated-verb family — do/does/did, contracted or not, against fifteen verbs — which closes
+every tense at once and stays deterministic. Of the negated verbs that appear in real
+refusals across every run recorded so far (`contain`, `mention`, `state`, `specify`,
+`include`, `provide`, `list`), the last two were uncovered.
+
+The tradeoff is unchanged and worth stating: a phrase match cannot tell a refusal from a
+fabrication that happens to contain a hedge. It stays a phrase match anyway, because the
+alternative is asking an LLM to grade the LLM.
+
+**Current results: refusal accuracy 1.000 (n=8), on all five retrieval configurations
+below** — including all five hard controls, and unchanged when the retrieved context is cut
+to a fifth of its size.
+
+### Why the retrieval metrics were saturated, which was not the golden set's fault
+
+Term recall and document-title hit both sat at 1.000 and could not tell two configurations
+apart. The obvious diagnosis was that the questions were too easy, so the set was rebuilt
+around the harder shapes above — and both metrics stayed at exactly 1.000. That turned out to
+be the more useful result.
+
+**The whole corpus is 14,174 characters.** Three one-page resumes. Parent-context expansion
+returns whole pages, so `top_k=3` hands back a mean of 8,668 characters — 61% of every
+character available, up to 84% on individual questions — and 9 of the 25 answerable examples
+retrieve all three resumes. A recall metric cannot fail when the context is most of the
+corpus, and document-title hit cannot miss a document that is nearly always included. The
+saturation was a property of the retrieval budget, not the questions.
+
+Two metrics were added because of this, and both are reported by the CLIs:
+
+- **`doc_precision`** — the share of retrieved chunks drawn from a document expected to hold
+  the answer. This is the cost that recall metrics hide: returning all three resumes for a
+  question one of them answers scores 0.333 and pushes the work of ignoring two irrelevant
+  resumes onto the generator.
+- **`context_chars`** — a diagnostic, not a score, so a future run whose context has quietly
+  grown to swallow the corpus is visible instead of looking like a perfect result.
 
 Deterministic retrieval metrics — no LLM judge, fully reproducible:
 
 ```powershell
-python -m rag_studio.eval_cli --output evaluation\runs\baseline.jsonl
-python -m rag_studio.agent_eval_cli --output evaluation\runs\agent_latest.jsonl
-python -m rag_studio.failure_cli --input evaluation\runs\agent_latest.jsonl
+python -m rag_studio.eval_cli --output evaluation\runs\hard_baseline.jsonl
+python -m rag_studio.agent_eval_cli --output evaluation\runs\agent_hard.jsonl
+python -m rag_studio.failure_cli --input evaluation\runs\agent_hard.jsonl
 ```
 
-Latest results (n=14):
+Latest results (n=33: 25 answerable, 8 negative controls). All five rows scored refusal
+accuracy 1.000:
 
-| Run | Term recall | Doc title hit | Mean retrieval grade | Rewrite rate |
+| Run | Term recall | Doc title hit | Doc precision | Context chars |
 | --- | --- | --- | --- | --- |
-| Baseline pipeline (`all_resumes_baseline`) | 1.000 | 1.000 | — | — |
-| LangGraph agent (`agent_latest`) | 1.000 | 1.000 | 0.617 | 0.071 |
+| Baseline, parent context, `top_k=3` (default) | 1.000 | 1.000 | 0.707 | 8,668 |
+| Baseline, child chunks, `top_k=3` | 1.000 | 1.000 | 0.707 | 5,470 |
+| Baseline, parent context, `top_k=1` | 0.903 | 0.880 | 0.880 | 3,505 |
+| Baseline, child chunks, `top_k=1` | 0.843 | 0.960 | 0.960 | 1,750 |
+| LangGraph agent, `top_k=3` | 1.000 | 1.000 | 0.720 | 6,546 |
 
-Term recall and document-title hit are saturated at 1.000 on this golden set, so they no
-longer discriminate between configurations — the mean retrieval grade (range 0.250–0.857)
-is the metric with headroom. Exactly one example (`tutoring_memory`) triggered a rewrite
-and retry. Both facts are the main argument for a harder golden set before tuning further.
-Context precision and recall below are pinned at 1.000 for the same reason: retrieval on
-this set is not the bottleneck, generation quality is.
+The agent adds a mean retrieval grade of 0.547 and a rewrite rate of 0.030 — one example in
+33 triggered a rewrite and retry. The grade fell from 0.617 on the old 14-example set, which
+is the harder questions showing up in the one metric that already had headroom.
+
+**At `top_k=1` the metrics finally discriminate**, and the reading is a real tradeoff rather
+than a ranking. Expanding a child chunk to its parent page recovers terms the child did not
+contain (term recall 0.843 → 0.903) and costs document precision (0.960 → 0.880), because a
+whole page pulls in neighbouring sections that belong to other questions. That is the
+parent/child design working as intended, and it is only visible once the retrieval budget is
+tight enough for a wrong choice to cost something.
+
+At `top_k=3` — the default, and what the deployed app uses — the honest summary is that
+retrieval on a corpus this small is over-provisioned. Turning parent context off cuts the
+context by 37% with no measurable loss on any metric. Nothing here is a bottleneck worth
+tuning: `doc_precision` at 0.707 is the only number with room, and the way to move it is a
+corpus large enough that returning most of it is no longer an option.
 
 ### RAGAS
 
@@ -472,8 +554,11 @@ the full golden set is practical in one pass. Useful flags:
 Supported metrics: `faithfulness`, `answer_relevancy`, `context_precision`,
 `context_recall`.
 
-Results with Gemini generating the answers and `gemini-3.6-flash` judging, over the full
-golden set (n=14, 56 judge calls in about 70 seconds):
+Results with Gemini generating the answers and `gemini-3.6-flash` judging, **measured on the
+previous 14-example golden set** (56 judge calls in about 70 seconds). These have not been
+re-run against the 33-example set — `context_precision` and `context_recall` are pinned at
+1.000 here for the same over-provisioned-retrieval reason described above, so re-judging them
+would cost calls to confirm a ceiling that is already understood:
 
 | Metric | Score |
 | --- | --- |
@@ -482,9 +567,9 @@ golden set (n=14, 56 judge calls in about 70 seconds):
 | context_precision | 1.000 |
 | context_recall | 1.000 |
 
-Faithfulness is the metric with real signal: 11 of 14 examples score a perfect 1.00, and
-the floor is 0.83 (`software_frontend`). Being LLM-judged, it moves a little between runs —
-an earlier pass over the same records gave 0.952.
+Faithfulness is the metric with real signal: 11 of those 14 examples score a perfect 1.00,
+and the floor is 0.83 (`software_frontend`). Being LLM-judged, it moves a little between
+runs — an earlier pass over the same records gave 0.952.
 
 **Read the 0.910 answerable-only figure, not the 0.787 headline** — see the negative
 controls section above for why. The RAGAS CLI now prints both side by side and appends a
@@ -513,7 +598,9 @@ LLM was configured at the time — never a fair target for faithfulness or answe
 - Chunking strategy tradeoffs (fixed vs recursive vs parent/child)
 - Dense vs sparse retrieval, and fusion of both
 - Cross-encoder reranking
-- Deterministic evaluation, negative controls, and metric saturation
+- Deterministic evaluation, negative controls, and metric saturation — including the case
+  where a saturated metric is measuring the retrieval budget rather than the questions, and
+  where a metric is under-counting correct behaviour instead of the system regressing
 - Agentic query routing, retrieval grading, and self-correcting retry loops
 - Production deployment with Docker + Cloud Run
 
