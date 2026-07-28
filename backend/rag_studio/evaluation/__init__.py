@@ -15,6 +15,7 @@ from rag_studio.evaluation.failure_analysis import (
 from rag_studio.evaluation.golden_set import (
     GoldenExample,
     contains_expected_term,
+    doc_precision,
     doc_title_hit,
     load_golden_set,
     run_evaluation,
@@ -27,6 +28,7 @@ __all__ = [
     "FailureExample",
     "GoldenExample",
     "contains_expected_term",
+    "doc_precision",
     "doc_title_hit",
     "failed_examples",
     "format_failure_report",

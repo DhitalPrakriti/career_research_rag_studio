@@ -153,6 +153,10 @@ def run_evaluation(
                 "retrieved_titles": retrieved_titles,
                 "term_recall": term_recall(contexts, example.expected_terms),
                 "doc_title_hit": doc_title_hit(retrieved_titles, example.expected_doc_titles),
+                "doc_precision": doc_precision(retrieved_titles, example.expected_doc_titles),
+                # Diagnostic, not a score: makes it visible when the retrieved context has
+                # grown large enough that recall metrics cannot fail.
+                "context_chars": sum(len(context) for context in contexts),
                 "is_negative_control": example.is_negative_control,
                 "refusal_correct": (
                     answer_refuses(result.answer) if example.is_negative_control else None
@@ -196,6 +200,8 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, float]:
             "doc_title_hit": 0.0,
             "answerable_term_recall": 0.0,
             "answerable_doc_title_hit": 0.0,
+            "answerable_doc_precision": 0.0,
+            "mean_context_chars": 0.0,
             "refusal_accuracy": 0.0,
             "answerable_count": 0.0,
             "negative_control_count": 0.0,
@@ -205,9 +211,16 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, float]:
     negatives = [record for record in records if record.get("is_negative_control")]
 
     def mean(rows: list[dict[str, Any]], key: str) -> float:
-        if not rows:
+        """Average over the rows that carry the metric.
+
+        Records written by an older run predate the newer metrics. Averaging a missing
+        value as 0.0 would report a precision collapse that never happened, so absent
+        keys are skipped and a metric no row carries reads 0.0, the same as no data.
+        """
+        values = [float(row[key]) for row in rows if row.get(key) is not None]
+        if not values:
             return 0.0
-        return sum(float(row[key]) for row in rows) / len(rows)
+        return sum(values) / len(values)
 
     return {
         # Kept for continuity with earlier runs, but read the answerable_* figures.
@@ -215,6 +228,9 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, float]:
         "doc_title_hit": mean(records, "doc_title_hit"),
         "answerable_term_recall": mean(answerable, "term_recall"),
         "answerable_doc_title_hit": mean(answerable, "doc_title_hit"),
+        # The figure with headroom once the two above saturate.
+        "answerable_doc_precision": mean(answerable, "doc_precision"),
+        "mean_context_chars": mean(records, "context_chars"),
         "refusal_accuracy": (
             sum(1 for row in negatives if row.get("refusal_correct")) / len(negatives)
             if negatives
@@ -247,6 +263,27 @@ def doc_title_hit(retrieved_titles: list[str], expected_titles: list[str]) -> fl
         return 1.0
     retrieved = set(retrieved_titles)
     return 1.0 if any(title in retrieved for title in expected_titles) else 0.0
+
+
+def doc_precision(retrieved_titles: list[str], expected_titles: list[str]) -> float:
+    """Share of retrieved chunks that came from a document expected to hold the answer.
+
+    `doc_title_hit` asks whether the right document appeared at all, which saturates the
+    moment retrieval returns enough of the corpus to be sure of including it. On a corpus
+    of three one-page resumes, page-level parent context at top_k=3 returns up to 84% of
+    every character available, so hitting the right document is close to unavoidable and
+    the metric stops telling two configurations apart.
+
+    Precision is what still has headroom: returning all three resumes for a question only
+    one of them answers scores 0.333 and pushes the work of ignoring two irrelevant
+    resumes onto the generator.
+    """
+    if not expected_titles:
+        return 1.0
+    if not retrieved_titles:
+        return 0.0
+    expected = set(expected_titles)
+    return sum(1 for title in retrieved_titles if title in expected) / len(retrieved_titles)
 
 
 def _normalized_tokens(text: str) -> list[str]:

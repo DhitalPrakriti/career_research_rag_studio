@@ -42,7 +42,9 @@ def main() -> None:
     print(f"Output: {args.output}")
     print(f"Answerable term recall:   {summary['answerable_term_recall']:.3f}  (n={answerable})")
     print(f"Answerable doc title hit: {summary['answerable_doc_title_hit']:.3f}  (n={answerable})")
+    print(f"Answerable doc precision: {summary['answerable_doc_precision']:.3f}  (n={answerable})")
     print(f"Refusal accuracy:         {summary['refusal_accuracy']:.3f}  (n={negatives})")
+    print(f"Mean context chars:       {summary['mean_context_chars']:.0f}")
     print(f"Rewrite rate:             {summary['rewrite_rate']:.3f}")
     print(f"Average retrieval grade:  {summary['average_retrieval_grade']:.3f}")
 

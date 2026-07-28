@@ -7,6 +7,7 @@ from rag_studio.agents.graph import CareerResearchAgent
 from rag_studio.agents.trace import AgentTraceEvent
 from rag_studio.evaluation.golden_set import (
     answer_refuses,
+    doc_precision,
     doc_title_hit,
     load_golden_set,
     summarize_records,
@@ -42,6 +43,8 @@ def run_agent_evaluation(
                 "retrieved_titles": retrieved_titles,
                 "term_recall": term_recall(contexts, example.expected_terms),
                 "doc_title_hit": doc_title_hit(retrieved_titles, example.expected_doc_titles),
+                "doc_precision": doc_precision(retrieved_titles, example.expected_doc_titles),
+                "context_chars": sum(len(context) for context in contexts),
                 "is_negative_control": example.is_negative_control,
                 "refusal_correct": (
                     answer_refuses(result.answer) if example.is_negative_control else None
