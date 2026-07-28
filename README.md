@@ -515,7 +515,7 @@ LLM was configured at the time — never a fair target for faithfulness or answe
 - Cross-encoder reranking
 - Deterministic evaluation, negative controls, and metric saturation
 - Agentic query routing, retrieval grading, and self-correcting retry loops
-- Production deployment with Docker + Cloud Run (pending)
+- Production deployment with Docker + Cloud Run
 
 ### Evaluating the tailoring, not just the retrieval
 
