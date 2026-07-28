@@ -144,6 +144,30 @@ class TestLabels:
                     f"{example.expected_doc_titles}"
                 )
 
+    def test_no_unlisted_document_answers_the_question_too(
+        self, examples: list[GoldenExample], document_text: dict[str, str]
+    ) -> None:
+        """A document holding every expected term answers the question as well.
+
+        Leaving it out of expected_doc_titles makes doc_precision punish a retrieval that
+        was correct. This caught `education` and `volunteer`, which listed only the AI/ML
+        resume although all three carry the degree and the volunteering verbatim — the
+        old doc_title_hit could not tell the difference, so it went unnoticed.
+        """
+        for example in examples:
+            if example.is_negative_control:
+                continue
+            ingested = {Path(doc).name for doc in example.docs}
+            for title in ingested - set(example.expected_doc_titles):
+                answers_it = all(
+                    contains_expected_term(document_text[title], term)
+                    for term in example.expected_terms
+                )
+                assert not answers_it, (
+                    f"{example.id}: {title} contains every expected term but is not "
+                    "listed, so retrieving it counts against doc_precision"
+                )
+
     def test_single_token_terms_never_match_only_inside_a_longer_word(
         self, examples: list[GoldenExample], document_text: dict[str, str]
     ) -> None:

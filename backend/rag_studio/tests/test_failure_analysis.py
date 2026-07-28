@@ -43,6 +43,28 @@ def test_worst_examples_sorts_lowest_scores_first() -> None:
     ]
 
 
+def test_worst_examples_ranks_by_precision_when_nothing_failed() -> None:
+    """The case that made the report useless: everything scores 1.000 on recall and
+    doc-title hit, so without a precision tie-break the ranking is just file order."""
+    examples = [
+        _example("precise", doc_precision=1.0),
+        _example("dragged_in_two_resumes", doc_precision=1 / 3),
+        _example("dragged_in_one_resume", doc_precision=2 / 3),
+    ]
+
+    assert [example.id for example in worst_examples(examples, limit=2)] == [
+        "dragged_in_two_resumes",
+        "dragged_in_one_resume",
+    ]
+
+
+def test_imprecise_retrieval_is_not_counted_as_a_failure() -> None:
+    """A supported answer that also pulled in irrelevant resumes is waste, not failure."""
+    examples = [_example("imprecise", doc_precision=1 / 3)]
+
+    assert failed_examples(examples) == []
+
+
 def test_load_failure_examples_reads_jsonl(tmp_path) -> None:
     path = tmp_path / "records.jsonl"
     path.write_text(json.dumps(_record("example")) + "\n", encoding="utf-8")
@@ -99,6 +121,7 @@ def _example(
     example_id: str,
     term_recall: float = 1.0,
     doc_title_hit: float = 1.0,
+    doc_precision: float = 1.0,
 ) -> FailureExample:
     return FailureExample(
         id=example_id,
@@ -109,4 +132,5 @@ def _example(
         term_recall=term_recall,
         doc_title_hit=doc_title_hit,
         missing_terms=["LangChain"],
+        doc_precision=doc_precision,
     )

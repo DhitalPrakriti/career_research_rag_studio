@@ -18,9 +18,18 @@ class FailureExample:
     term_recall: float
     doc_title_hit: float
     missing_terms: list[str]
+    # Defaults to 1.0 so a run written before the metric existed ranks neutrally rather
+    # than sorting to the top as the worst example on missing data.
+    doc_precision: float = 1.0
 
     @property
     def failure_score(self) -> float:
+        """How badly the example failed to retrieve what it needed.
+
+        Deliberately excludes `doc_precision`. Dragging in two irrelevant resumes is
+        waste, not failure — the answer is still supported — so counting it here would
+        report most of the set as failing. It ranks the report instead.
+        """
         return (1.0 - self.term_recall) + (1.0 - self.doc_title_hit)
 
 
@@ -36,12 +45,20 @@ def load_failure_examples(path: str | Path) -> list[FailureExample]:
 
 
 def worst_examples(examples: list[FailureExample], limit: int = 5) -> list[FailureExample]:
+    """Rank by failure, then by imprecision.
+
+    With term recall and doc-title hit both saturated at 1.000, every failure_score is 0
+    and this degenerated into listing the set in file order — the report had nothing to
+    say. Precision breaks that tie, so the examples that pulled in resumes they did not
+    need surface first.
+    """
     if limit <= 0:
         raise ValueError("limit must be positive")
     return sorted(
         examples,
         key=lambda example: (
             example.failure_score,
+            1.0 - example.doc_precision,
             1.0 - example.term_recall,
             1.0 - example.doc_title_hit,
         ),
@@ -68,6 +85,7 @@ def format_failure_report(examples: list[FailureExample]) -> str:
                     f"Question: {example.question}",
                     f"Term recall: {example.term_recall:.3f}",
                     f"Doc title hit: {example.doc_title_hit:.3f}",
+                    f"Doc precision: {example.doc_precision:.3f}",
                     f"Missing terms: {missing_terms}",
                     f"Retrieved titles: {titles}",
                     f"Reference: {_compact(example.reference)}",
@@ -90,6 +108,7 @@ def _record_to_failure_example(record: dict[str, Any]) -> FailureExample:
         term_recall=float(record.get("term_recall", 0.0)),
         doc_title_hit=float(record.get("doc_title_hit", 0.0)),
         missing_terms=missing_terms(contexts, expected_terms),
+        doc_precision=float(record.get("doc_precision", 1.0)),
     )
 
 
