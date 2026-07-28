@@ -517,6 +517,56 @@ LLM was configured at the time — never a fair target for faithfulness or answe
 - Agentic query routing, retrieval grading, and self-correcting retry loops
 - Production deployment with Docker + Cloud Run (pending)
 
+### Evaluating the tailoring, not just the retrieval
+
+The unit tests cover the mechanics; they say nothing about whether the output is right on a
+real posting. `evaluation/tailoring_set.jsonl` holds 6 postings — AI engineer, ML engineer,
+backend, frontend, IT support, data platform — labelled with 33 skills the resumes do
+contain and 18 they do not, deliberately spanning all three resume files.
+
+```powershell
+python -m rag_studio.tailor_eval_cli
+```
+
+| Metric | Latest run |
+| --- | --- |
+| Invented claims (present in no retrieved evidence) | 0.000 — 26 of 26 bullets grounded |
+| Misattributed (real, but another requirement's evidence) | 0.077 — 2 of 26 |
+| Classification accuracy (51 labels) | 1.000 |
+| Extraction recall | 1.000 |
+
+**Invented and misattributed are counted separately, and the distinction changed the
+headline.** The rewriter receives every supported requirement and its evidence in one
+prompt, so a bullet can cite a real fact belonging to a neighbouring requirement. Checking
+each bullet only against its own requirement's evidence reported 4.5% "fabrication"; almost
+all of it was untidy attribution rather than invention. Only a claim absent from *all*
+retrieved evidence is a fabrication.
+
+**These numbers move between runs.** The verification step is an LLM call, so identical
+inputs do not always produce identical statuses — classification accuracy read 0.941 on one
+run and 1.000 on the next two, with `PyTorch` and `Flask` marked absent once and matched
+afterwards. Quote the metric as a range, not a fixed figure, and re-run before trusting a
+change.
+
+**One genuine invention has been observed.** In one run a bullet expanded "BFRB" from the
+resume into "Body-Focused Repetitive Behaviors" — factually correct, but text appearing
+nowhere in the evidence, produced from the model's own knowledge. It did not recur, so the
+honest claim is that invention is rare rather than impossible, which is exactly why the
+check exists rather than resting on the structural argument alone.
+
+The fabrication check needs no hand labelling: it extracts every number and every
+named-entity-shaped token from a bullet and asserts each appears in the evidence. Its first
+version only caught digits, acronyms and inner capitals like `PyTorch`, which silently
+skipped the case that matters — `Kubernetes` and `Terraform` are plainly capitalised, so an
+invented technology would have passed while a legitimate one was checked. Mid-sentence
+capitalisation is now the signal, with sentence-initial words skipped so the verb a bullet
+opens with does not fire.
+
+Label correctness was verified against the extracted PDF text before the set shipped, which
+caught `Tailwind` being labelled absent when it is on the software developer resume, and
+ruled out short substring-prone keywords such as `rag` (inside "storage") and `git` (inside
+"digit").
+
 ## Deployment
 
 One container, built by the two-stage `Dockerfile`: node builds the frontend, then a Python
