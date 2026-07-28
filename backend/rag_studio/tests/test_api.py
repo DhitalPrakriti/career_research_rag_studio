@@ -301,4 +301,4 @@ def test_missing_frontend_leaves_the_api_working(
     monkeypatch.setattr(app_module.AgentService, "load", lambda self, docs_dir=None: None)
 
     with TestClient(create_app("docs")) as client:
-        assert client.get("/healthz").status_code == 200
+        assert client.get("/api/live").status_code == 200

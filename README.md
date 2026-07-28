@@ -34,8 +34,7 @@ rewritten query.
 Also working: a FastAPI service and a React + TypeScript UI that surfaces the routing
 decision, the retrieval grade, the trace and the retrieved chunks for every answer.
 
-Not built yet: containerised deployment. There is no `Dockerfile` and nothing is deployed
-to Cloud Run.
+Deployed to Google Cloud Run from a single container that serves both the API and the UI.
 
 ## Architecture
 
@@ -330,7 +329,7 @@ Set `APP_PASSWORD` and every data endpoint requires a session:
 
 | Endpoint | Auth |
 | --- | --- |
-| `GET /healthz` | open — liveness probe, reveals nothing |
+| `GET /api/live` | open — liveness probe, reveals nothing. Not `/healthz`: Cloud Run reserves that path and answers it itself |
 | `GET /api/auth/session` | open — tells the UI whether to show the login screen |
 | `POST /api/auth/login` / `logout` | open |
 | everything else, including `/api/health` | session required |
@@ -515,3 +514,59 @@ LLM was configured at the time — never a fair target for faithfulness or answe
 - Deterministic evaluation, negative controls, and metric saturation
 - Agentic query routing, retrieval grading, and self-correcting retry loops
 - Production deployment with Docker + Cloud Run (pending)
+
+## Deployment
+
+One container, built by the two-stage `Dockerfile`: node builds the frontend, then a Python
+image serves those assets alongside the API, so there is no cross-origin request in
+production and nothing to host separately.
+
+```powershell
+gcloud run deploy career-rag-studio --source . `
+  --region=us-central1 --service-account=rag-studio-run@PROJECT.iam.gserviceaccount.com `
+  --execution-environment=gen2 `
+  --add-volume="name=docsvol,type=cloud-storage,bucket=PROJECT-documents" `
+  --add-volume-mount="volume=docsvol,mount-path=/mnt/docs" `
+  --set-env-vars="RAG_DOCS_DIR=/mnt/docs,LLM_PROVIDER=gemini,GEMINI_MODEL=gemini-3.6-flash" `
+  --set-secrets="APP_PASSWORD_HASH=app-password-hash:latest,APP_SECRET_KEY=app-secret-key:latest,GEMINI_API_KEY=gemini-api-key:latest" `
+  --memory=2Gi --cpu=2 --min-instances=1 --allow-unauthenticated
+```
+
+### Uploaded documents have to outlive the container
+
+Cloud Run's filesystem is ephemeral and not shared between instances, so documents uploaded
+through the UI would vanish on the next restart. A GCS bucket is mounted at the documents
+directory instead, which needs `--execution-environment=gen2`. `RAG_DOCS_DIR` already
+existed, so this took no code change — the upload path writes straight through to the
+bucket.
+
+Verified rather than assumed: a document uploaded through the deployed API appeared in the
+bucket, survived a forced new revision (a genuinely different container), was still indexed
+afterwards, and deleting it through the API removed it from the bucket too.
+
+### Two things that only show up in the container
+
+- **The UI 404s if the frontend path is resolved by walking up from the package file.** That
+  works under an editable install and breaks once the package is pip-installed, where the
+  walk lands in site-packages. `FRONTEND_DIST` plus a cwd-relative fallback covers both.
+- **`/healthz` is reserved on Cloud Run.** Google's frontend answers it with its own HTML
+  404 and never forwards it, so a probe there reports a healthy service as down. The
+  liveness route is `/api/live`. The give-away was that `/nonexistent-path` returned
+  FastAPI's JSON 404 while `/healthz` returned Google's HTML one.
+
+### Running costs and knobs
+
+`--min-instances=1` keeps one instance warm, because a cold start reloads the embedding
+model *and* reindexes every document. That is roughly $8–12/month for 2 vCPU and 2 GiB
+always on. Drop to `--min-instances=0` to pay almost nothing and accept 20–30 seconds on the
+first request after idle.
+
+`--memory=2Gi` is not optional: torch, FAISS and the embedding model do not fit in the
+512Mi default. Torch is installed from the CPU index, since the CUDA build is gigabytes and
+useless here, and the embedding model is baked into the image so a cold start never depends
+on Hugging Face being reachable.
+
+Secrets come from Secret Manager as environment variables; `.dockerignore` keeps `.env` out
+of the image. The runtime service account holds `secretAccessor` on each secret
+individually and `objectAdmin` on only the documents bucket, rather than anything
+project-wide.

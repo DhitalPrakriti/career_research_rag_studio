@@ -63,7 +63,7 @@ EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request,os; \
-urllib.request.urlopen(f\"http://127.0.0.1:{os.getenv('PORT','8080')}/healthz\").read()"
+urllib.request.urlopen(f\"http://127.0.0.1:{os.getenv('PORT','8080')}/api/live\").read()"
 
 # sh -c so $PORT expands: Cloud Run assigns the port and expects the app to honour it.
 # One worker on purpose — each worker would hold its own copy of the model and index.

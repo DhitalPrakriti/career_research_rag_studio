@@ -197,9 +197,14 @@ def create_app(docs_dir: str | Path | None = None) -> FastAPI:
 
     authenticated = [Depends(require_session)]
 
-    @app.get("/healthz")
+    @app.get("/api/live")
     def liveness() -> dict[str, str]:
-        """Unauthenticated probe for load balancers. Deliberately reveals nothing."""
+        """Unauthenticated probe for load balancers. Deliberately reveals nothing.
+
+        Not /healthz: Google's frontend reserves that path on Cloud Run and answers it
+        with its own HTML 404 without ever forwarding the request to the container, so a
+        probe there reports the service as down while it is perfectly healthy.
+        """
         return {"status": "ok"}
 
     @app.get("/api/auth/session", response_model=SessionResponse)

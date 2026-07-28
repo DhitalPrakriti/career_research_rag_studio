@@ -175,8 +175,11 @@ class TestProtectedEndpoints:
         assert response.status_code == 401
 
     def test_liveness_stays_open_for_probes(self, secured: TestClient) -> None:
-        """Cloud load balancers cannot authenticate, and it reveals nothing."""
-        response = secured.get("/healthz")
+        """Cloud load balancers cannot authenticate, and it reveals nothing.
+
+        Path is /api/live, not /healthz, which Cloud Run reserves and never forwards.
+        """
+        response = secured.get("/api/live")
 
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
